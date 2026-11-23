@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Totp/Totp.csproj" />
+    <Project Path="src/WindowsAuthenticator/WindowsAuthenticator.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Totp.Tests/Totp.Tests.csproj" />
+  </Folder>
+</Solution>
