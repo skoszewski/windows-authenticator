@@ -6,10 +6,8 @@ passes. It is the Windows version of Mac Authenticator.
 
 ## Requirements
 
-- Windows 10 or 11, x64 or Arm64, with the .NET 10 Desktop Runtime
-  (Microsoft.WindowsDesktop.App 10.0).
-- To build: the .NET 10 SDK, on Windows, macOS or Linux. The Windows Desktop targeting pack is
-  downloaded on the first restore (`EnableWindowsTargeting`).
+- Windows 10 or 11, x64 or Arm64, with the .NET 10 Desktop Runtime.
+- To build: the .NET 10 SDK, on Windows, macOS or Linux.
 
 ## Building
 
@@ -20,16 +18,26 @@ dotnet publish src/WindowsAuthenticator -c Release -r win-x64 --self-contained f
 dotnet publish src/WindowsAuthenticator -c Release -r win-arm64 --self-contained false -o dist/win-arm64
 ```
 
-`dotnet test` runs the tests in `tests/Totp.Tests` with MSTest: they compare the codes with the
-test vectors of RFC 6238 Appendix B for SHA-1, SHA-256 and SHA-512 and with codes printed by
-`otp.py` of linux-cloud-router, and check the reading of secrets and otpauth URIs. The library
-has no Windows dependency, so the tests also run on macOS and Linux.
+`dotnet test` runs the tests of the TOTP code; they run on any OS.
 
 The projects are:
 
 - `src/Totp`: the TOTP code, base32 decoding and otpauth URI reading;
 - `src/WindowsAuthenticator`: the Windows Forms app;
 - `tests/Totp.Tests`: the tests of `src/Totp`.
+
+## The app icon
+
+The app icon, `src/WindowsAuthenticator/Resources/AppIcon.ico`, is part of the repository. It is
+drawn by `tools/make-windows-icon.swift` of the Mac Authenticator repository, run there:
+
+```sh
+swift tools/make-windows-icon.swift <windows-authenticator>/src/WindowsAuthenticator/Resources/AppIcon.ico
+```
+
+The script needs macOS. It draws with CoreGraphics and ImageIO, which
+[Swift for Windows](https://www.swift.org/install/windows/) does not include, so it does not
+build on Windows.
 
 ## Installing and running
 
@@ -78,35 +86,15 @@ codes of other apps, such as `otpauth-migration://`, are refused.
 
 ## Where the secrets are kept
 
-Each account is one generic credential of Windows Credential Manager, kept on this computer
-(Control Panel > Credential Manager > Windows Credentials lists them):
-
-- its target name is `pl.waw.koszewscy.WindowsAuthenticator:<id>`, the id being a GUID;
-- its password (credential blob) is the account's secret, as base32 text;
-- its user name is the account's name;
-- its comment is the issuer, when the account has one;
-- its attribute `Koszewscy_Parameters` holds the algorithm, digits and period, as
-  `algorithm=SHA1&digits=6&period=30`.
-
-The order of the accounts in the menu is the `AccountOrder` value, a list of ids, of the registry
-key `HKEY_CURRENT_USER\Software\pl.waw.koszewscy\WindowsAuthenticator`. Launch at Login is the
-value `Windows Authenticator` of `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`,
-holding the path of `WindowsAuthenticator.exe`; after the app is moved, Launch at Login is shown
-unticked until it is chosen again.
-
-The menu is built from the credentials' other fields alone. Listing the credentials returns
-their secrets too; the app clears them in the returned buffer at once and keeps none. A secret
-is read when its code is needed: when the account's Show window opens it is read and kept in
-memory while the window is open, and dropped when it closes; Copy Code reads it, copies the
-code and keeps nothing. A secret that cannot be read is reported in the code window instead of
-the code.
-
-Any program running as the same Windows user can read these credentials; Credential Manager
-does not ask.
-
-When the credentials cannot be listed, the menu shows why and a **Retry** item, and refuses
-changes until they have been listed.
+Each account is an entry of Windows Credential Manager, listed in Control Panel > Credential
+Manager > Windows Credentials. A secret is read only when its code is shown or copied, and kept
+in memory only while its code window is open. Any program running as the same Windows user can
+read these entries.
 
 ## License
 
 MIT, see `LICENSE`.
+
+## Sibling project
+
+Mac Authenticator, the macOS version of this app: <https://github.com/skoszewski/mac-authenticator>.

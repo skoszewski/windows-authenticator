@@ -19,7 +19,7 @@ internal sealed class TrayContext : ApplicationContext
     {
         icon = new NotifyIcon
         {
-            Icon = AppIcon.Create(SystemInformation.SmallIconSize.Width),
+            Icon = AppIcon.Load(SystemInformation.SmallIconSize),
             Text = Dialogs.AppName,
             ContextMenuStrip = menu,
         };

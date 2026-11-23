@@ -96,10 +96,25 @@ Errors, the Remove question and About are `TaskDialog` pages, whose heading and 
 message and informative text of the alerts on macOS. Add Account is a form that stays open and
 shows the reason when the input is refused, as the alert loop does on macOS.
 
-## The icon is drawn in code
+## The icon is an .ico file drawn by a Swift script
 
-The notification area icon is drawn at the small icon size with `System.Drawing` from the
-shapes of Mac Authenticator's icon layers: a blue gradient square, a countdown ring, a shield and
-a keyhole, on the same 1024-unit canvas. The quadratic curves of the shield are drawn as the
-equivalent cubic Beziers, and the ring is drawn thicker than on macOS so that it shows at 16
-pixels. The executable has no icon resource.
+The icon is `src/WindowsAuthenticator/Resources/AppIcon.ico`, written by
+`tools/make-windows-icon.swift` of Mac Authenticator's repository from the shapes of its icon
+layers: a countdown ring, a
+shield and a keyhole on the same 1024-unit canvas. Windows does not mask or light an icon as macOS
+does, so the script draws the rounded square and the blue gradient itself, and the ring is drawn
+thicker than on macOS so that it shows at 16 pixels. Each size is drawn from the shapes rather
+than scaled from a larger image, so the small sizes stay sharp.
+
+The script runs on macOS with the Swift toolchain and CoreGraphics; neither macOS nor .NET on
+macOS has an SVG rasteriser or `System.Drawing`, and Swift on Windows has no CoreGraphics. It
+lives beside the Swift sources and icon layers it is drawn from, in Mac Authenticator's
+repository, and takes the path of the `.ico` as an argument, so the `.ico` is written into this
+repository and never into that one. It writes the `.ico` itself: the sizes Windows asks for up to
+64 pixels as 32-bit DIBs with an AND mask, and 256 pixels as PNG, which Windows reads in icons
+since Vista. The `.ico` is kept in this repository, so the app builds on any OS without the
+script; the script is run again only when the icon changes.
+
+The project uses the `.ico` as `ApplicationIcon`, which puts it in the executable for Explorer
+and the Start menu, and embeds it as a resource from which the notification area icon and the Add
+Account dialog load the image closest to the size Windows asks for.

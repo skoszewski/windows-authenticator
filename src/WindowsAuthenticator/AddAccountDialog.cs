@@ -10,6 +10,7 @@ internal sealed class AddAccountDialog : Form
     public AddAccountDialog(AccountStore store, string name = "", string input = "")
     {
         Text = "Add Account";
+        Icon = AppIcon.Load(SystemInformation.IconSize);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -81,5 +82,14 @@ internal sealed class AddAccountDialog : Form
             Activate();
             (name.Length == 0 && input.Length == 0 ? nameField : secretField).Focus();
         };
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Icon?.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }

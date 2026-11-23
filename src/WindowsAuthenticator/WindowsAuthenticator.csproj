@@ -11,7 +11,12 @@
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <AssemblyTitle>Windows Authenticator</AssemblyTitle>
     <RootNamespace>WindowsAuthenticator</RootNamespace>
+    <ApplicationIcon>Resources\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\AppIcon.ico" LogicalName="AppIcon.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="ZXing.Net" Version="0.16.11" />

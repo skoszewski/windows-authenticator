@@ -3,7 +3,7 @@ using FILETIME = System.Runtime.InteropServices.ComTypes.FILETIME;
 
 namespace WindowsAuthenticator;
 
-/// <summary>The Win32 functions of Credential Manager (wincred.h) and the icon and window helpers of user32.</summary>
+/// <summary>The Win32 functions of Credential Manager (wincred.h) and the window style of user32.</summary>
 internal static unsafe partial class NativeMethods
 {
     public const uint CredTypeGeneric = 1;
@@ -60,8 +60,4 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport("advapi32.dll", EntryPoint = "CredFree")]
     public static partial void CredFree(void* buffer);
-
-    [LibraryImport("user32.dll", EntryPoint = "DestroyIcon", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool DestroyIcon(IntPtr icon);
 }
