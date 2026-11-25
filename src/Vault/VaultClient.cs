@@ -404,8 +404,8 @@ public sealed class VaultClient(VaultConfiguration configuration, string? token 
 
     /// <summary>
     /// The token of a sign-in with the configured method and credential, the token, the password or the SecretID;
-    /// null for OIDC, which needs the browser. An empty setting or credential the method needs fails as
-    /// <see cref="EmptyValueException"/>.
+    /// null for OIDC, which signs in through the identity provider's pages. An empty setting or credential the
+    /// method needs fails as <see cref="EmptyValueException"/>.
     /// </summary>
     public static async Task<VaultToken?> SignInAsync(VaultConfiguration configuration, string? credential)
     {

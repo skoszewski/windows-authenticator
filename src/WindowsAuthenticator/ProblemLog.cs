@@ -7,9 +7,7 @@ namespace WindowsAuthenticator;
 internal static class ProblemLog
 {
     /// <summary>The log file, %LOCALAPPDATA%\pl.waw.koszewscy\WindowsAuthenticator\vault.log.</summary>
-    public static string FilePath { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "pl.waw.koszewscy", "WindowsAuthenticator", "vault.log");
+    public static string FilePath { get; } = Path.Combine(Settings.DataFolder, "vault.log");
 
     /// <summary>Appends a line naming the vault, the time and the problem; a log that cannot be written is skipped.</summary>
     public static void Write(string vault, VaultProblem problem)

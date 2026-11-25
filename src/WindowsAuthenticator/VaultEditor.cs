@@ -14,7 +14,7 @@ internal sealed class VaultEditor : UserControl
         (AuthMethod.Token, "Token"),
         (AuthMethod.Userpass, "Username and password"),
         (AuthMethod.Approle, "AppRole"),
-        (AuthMethod.Oidc, "OIDC (browser)"),
+        (AuthMethod.Oidc, "OIDC"),
     ];
 
     private readonly AccountStore store;
@@ -84,7 +84,7 @@ internal sealed class VaultEditor : UserControl
         Row("Username", username);
         Row("RoleID", roleId);
         Row("OIDC role", oidcRole);
-        Row("Callback port", oidcPort);
+        Row("Redirect URI port", oidcPort);
         layout.Controls.Add(credentialLabel);
         layout.Controls.Add(Fill(credential));
         if (session is not null)
@@ -242,7 +242,7 @@ internal sealed class VaultEditor : UserControl
         if (!int.TryParse(oidcPort.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var port)
             || port is < 1 or > 65535)
         {
-            throw SessionException.InvalidSetting("Callback port");
+            throw SessionException.InvalidSetting("Redirect URI port");
         }
         if (chosen == AuthMethod.Userpass && Text(username) is null)
         {
@@ -373,9 +373,7 @@ internal sealed class VaultEditor : UserControl
         };
         (status.Text, status.ForeColor) = current.State switch
         {
-            VaultState.SignedIn => (current.SignedInUntil is { } until
-                                        ? $"{signedIn} until {until.ToLocalTime():t}"
-                                        : signedIn, Color.ForestGreen),
+            VaultState.SignedIn => (signedIn, Color.ForestGreen),
             VaultState.SigningIn => (signingIn, Color.DarkGoldenrod),
             VaultState.Failed => (current.Problem?.Title ?? "Failed", Color.Firebrick),
             _ => (signedOut, SystemColors.GrayText),

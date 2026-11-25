@@ -23,6 +23,10 @@ internal static class Settings
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string RunValueName = "Windows Authenticator";
 
+    /// <summary>The folder of the app's files, %LOCALAPPDATA%\pl.waw.koszewscy\WindowsAuthenticator.</summary>
+    public static string DataFolder { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "pl.waw.koszewscy", "WindowsAuthenticator");
+
     /// <summary>The ids of the accounts in menu order.</summary>
     public static string[] AccountOrder
     {

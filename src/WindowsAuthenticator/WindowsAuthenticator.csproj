@@ -19,8 +19,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4370.26" />
     <PackageReference Include="ZXing.Net" Version="0.16.11" />
   </ItemGroup>
+
+  <!-- The WebView2 package references its WPF assembly in every .NET project; this app uses the
+       Windows Forms control alone, and the WPF assembly's WindowsBase conflicts with the app's. -->
+  <Target Name="RemoveWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <ProjectReference Include="../Totp/Totp.csproj" />

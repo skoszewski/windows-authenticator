@@ -34,17 +34,13 @@ public sealed record VaultProblem(VaultProblemKind Kind, string Title, string De
     public string Report => $"{Title}\n{Detail}\n{Suggestion}";
 
     /// <summary>
-    /// The problem of an error of a Vault call, a listener or a layer above; the method of the vault, when known,
-    /// words what to do about a refused token.
+    /// The problem of an error of a Vault call or a layer above; the method of the vault, when known, words what
+    /// to do about a refused token.
     /// </summary>
     public static VaultProblem From(Exception error, AuthMethod? method = null) => error switch
     {
         IVaultProblemSource source => source.Problem,
         VaultException vault => Of(vault, method),
-        SocketException { SocketErrorCode: SocketError.AddressAlreadyInUse } => new(
-            VaultProblemKind.Network, "The callback port is in use",
-            "Another program, or another OIDC vault, listens on the callback port.",
-            "Choose another callback port for the vault, and the same port in the OIDC role's redirect URIs."),
         _ => new(VaultProblemKind.Other, "The operation failed", error.Message,
                  "Try again. If it keeps failing, copy the details into a report."),
     };
@@ -63,8 +59,8 @@ public sealed record VaultProblem(VaultProblemKind Kind, string Title, string De
         VaultErrorKind.NotSignedIn => new(VaultProblemKind.NotSignedIn, "Not signed in",
                                           "No sign-in is active, and an OIDC vault signs in interactively after each launch and when its token ends.",
                                           "Sign in to the vault."),
-        VaultErrorKind.Oidc => new(VaultProblemKind.Denied, "The browser sign-in failed", error.Value,
-                                   "Sign in again; check the OIDC role and the callback port."),
+        VaultErrorKind.Oidc => new(VaultProblemKind.Denied, "The OIDC sign-in failed", error.Value,
+                                   "Sign in again; check the OIDC role and its redirect URI."),
         VaultErrorKind.KeyExists => new(VaultProblemKind.Other, "The key exists",
                                         $"The vault holds a key named {error.Value}.", "Choose another name."),
         VaultErrorKind.UnsupportedKey => new(VaultProblemKind.Other, "The vault cannot keep this key", error.Value,

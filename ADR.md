@@ -117,15 +117,15 @@ fields alone.
 
 ## The Vault client is a library on HttpClient, tested against a dev server
 
-The Vault client, the OIDC redirect listener, the connection test and the problem texts are the
-library `Vault`, which targets plain `net10.0` and uses no Windows API, so its tests run on any
-OS. Requests go through `HttpClient` with `SocketsHttpHandler`, so the system trust store applies,
-and plain HTTP works for any address, which is the user's choice for that vault. There is one
-client per scheme, host and port, whose certificate validation callback accepts what the system
-accepts and keeps the policy errors and chain status of a certificate it refuses: an
-`HttpRequestException` of `SecureConnectionError` does not tell an untrusted root from an expired
-certificate or a wrong name, and the callback's flags do, without reading localised exception
-texts.
+The Vault client, the rules of the OIDC sign-in window, the connection test, Vault Setup and the
+problem texts are the library `Vault`, which targets plain `net10.0` and uses no Windows API, so
+its tests run on any OS. Requests go through `HttpClient` with `SocketsHttpHandler`, so the system
+trust store applies, and plain HTTP works for any address, which is the user's choice for that
+vault. There is one client per scheme, host and port, whose certificate validation callback
+accepts what the system accepts and keeps the policy errors and chain status of a certificate it
+refuses: an `HttpRequestException` of `SecureConnectionError` does not tell an untrusted root from
+an expired certificate or a wrong name, and the callback's flags do, without reading localised
+exception texts.
 
 A request that gets no HTTP answer becomes a `VaultException` of the kind `Transport`, with the
 host and the original exception, and `VaultProblem.From` reads its `HttpRequestError`, its inner
@@ -136,8 +136,8 @@ reported as an answer that is not from a Vault.
 `Vault.Tests` start `vault server -dev`, which keeps its storage in memory, once for the test
 assembly in `[AssemblyInitialize]`, and configure it through its HTTP API with a plain
 `HttpClient`, apart from the client under test. The `vault` binary is a requirement of the tests,
-and a missing one fails them. The exchange of the code with an identity provider needs a browser
-sign-in and is checked by hand.
+and a missing one fails them. The exchange of the code with an identity provider needs the sign-in
+window and is checked by hand.
 
 ## A vault's settings are in the registry, its credential in Credential Manager
 
@@ -158,20 +158,53 @@ stay in Vault, since they cannot show a code without it.
 
 The identity provider signs the user in, so the app stores no credential for OIDC, and it keeps
 the resulting Vault token in memory alone: a sign-in is repeated after each start and when the
-token ends. The browser is opened from Sign In only, never because a code was needed, so a window
-opening in the background cannot start a login nobody expects. The other methods sign in by
-themselves, since they need no user.
+token ends. The sign-in window is opened from Sign In only, never because a code was needed, so a
+window opening in the background cannot start a login nobody expects. The other methods sign in
+by themselves, since they need no user.
 
-The redirect is received as `vault login -method=oidc` does it: the redirect URI is
-`http://localhost:<port>/oidc/callback`, 8250 by default, which the role's `allowed_redirect_uris`
-must hold. A browser may resolve `localhost` to `::1` or to `127.0.0.1`, so the listener is a
-`TcpListener` on both loopback addresses, not `HttpListener`, which works through `http.sys` on
-Windows and differently on the systems the tests also run on. It answers each request, 404 for any
-but the callback, and stops at the callback. Each connection is served on its own and closed when it
-sends no request line within 10 seconds: browsers open connections in advance and send nothing on
-some of them, and a listener that waited on such a connection would never read the redirect on the
-next one. The state of the authorisation URL is compared with the state of the redirect before the
-code is passed to Vault.
+The redirect URI is `http://localhost:<port>/oidc/callback`, 8250 by default, which the role's
+`allowed_redirect_uris` must hold, as for `vault login -method=oidc`. The state of the
+authorisation URL is compared with the state of the redirect before the code is passed to Vault.
+
+## OIDC signs in in an embedded WebView2 the app controls
+
+The identity provider's pages open in a window of the app, a WebView2 control, and not in the
+user's browser: a login page in another app, with no visible tie to the Authenticator, confuses
+the user, and a browser that is sent to `http://localhost` needs a listener that browsers' own
+connections in advance can hold up. The app takes the redirect itself: `NavigationStarting`
+cancels the navigation to the redirect URI and reads the state and the code from its address, so
+nothing listens on a port, nothing loads from localhost, and two OIDC vaults can use one redirect
+port, which only builds the URI.
+
+The decision is the library type `OidcSignInPolicy`, so it is tested without WebView2: the
+redirect ends the sign-in, a page over HTTPS loads, and plain HTTP, `data:`, `file:`,
+`javascript:` and custom schemes are refused with the reason shown in the window. The navigations
+of frames, `FrameNavigationStarting`, are decided the same way; WebView2 cannot cancel a frame's
+navigation to `about:srcdoc`, which the policy refuses but the frame loads. A page that opens a
+window loads in the same view. The header names the host of the page at all times, which is the
+user's only check of where a password goes. Certificate trust is the Windows store's; a
+certificate it refuses cancels the load instead of showing WebView2's warning page, and the
+error line says what is wrong, as it does for any other failed load.
+
+The provider's cookies live in the app's own WebView2 user data folder under
+`%LOCALAPPDATA%\pl.waw.koszewscy\WindowsAuthenticator`, apart from Edge's profile, so a provider's
+session survives and a sign-in after a start is often one click; the cost is that the session is
+kept on disk in the user's profile. The WebView2 Runtime is part of Windows 11 and of most
+Windows 10 installations; where it is missing, the sign-in fails with a problem that says so,
+and the other methods are unaffected.
+
+The `Microsoft.Web.WebView2` package references its Windows Forms, WPF and core assemblies in
+every .NET project and has no setting to leave one out. The WPF assembly needs the WPF
+`WindowsBase`, which a Windows Forms app does not have, so the build reports a version conflict
+(MSB3277) for an assembly the app never loads. A target in the app's project removes that
+reference before references are resolved, which keeps the build free of warnings and the WPF
+assembly out of the published folder.
+
+An embedded view has costs that the choice accepts: RFC 8252 recommends an external user agent
+for native apps, and Microsoft's WebView2 documentation advises against showing OAuth login
+pages in WebView2 and reading the redirect; the view has no Edge session and no Windows single
+sign-on, some providers refuse embedded views, and the app can in principle see what is typed in
+it. A provider for which this matters needs the browser.
 
 ## Vault Setup writes two policies, replaces nothing unasked, and assigns nothing
 

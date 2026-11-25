@@ -6,7 +6,8 @@ passes. It is the Windows version of Mac Authenticator.
 
 ## Requirements
 
-- Windows 10 or 11, x64 or Arm64, with the .NET 10 Desktop Runtime.
+- Windows 10 or 11, x64 or Arm64, with the .NET 10 Desktop Runtime. The OIDC sign-in also needs
+  the Microsoft Edge WebView2 Runtime, which Windows 11 includes.
 - To build: the .NET 10 SDK, on Windows, macOS or Linux.
 - To test: the `vault` binary on `PATH`, or named by `VAULT_BINARY`. The Vault tests start an
   in-memory `vault server -dev` on 127.0.0.1, port 18200 or `VAULT_TEST_PORT`, and stop it
@@ -25,16 +26,17 @@ dotnet publish src/WindowsAuthenticator -c Release -r win-arm64 --self-contained
 `tests/Totp.Tests` compare the codes with the test vectors of RFC 6238 Appendix B and with codes
 printed by `otp.py` of linux-cloud-router, and check the reading of secrets and otpauth URIs. The
 tests in `tests/Vault.Tests` run the Vault client against a dev server they start: the
-authentication with a token, a password and an AppRole, renewing, listing, reading, generating and importing
-keys, the policy that denies listing, a revoked token, codes that agree with the ones `Totp`
-computes for the same secret, Test Connection, the listener that receives the OIDC redirect, and
-the words a problem is said in.
+authentication with a token, a password and an AppRole, renewing, listing, reading, generating
+and importing keys, the policy that denies listing, a revoked token, codes that agree with the
+ones `Totp` computes for the same secret, Test Connection, Vault Setup, the words a problem is
+said in, and the rules that decide which pages of the OIDC sign-in window load and which address
+ends the sign-in.
 
 The projects are:
 
 - `src/Totp`: the TOTP code, base32 decoding and otpauth URI reading;
-- `src/Vault`: the client of the Vault HTTP API, the OIDC redirect listener, the connection test
-  and the problems in words;
+- `src/Vault`: the client of the Vault HTTP API, the rules of the OIDC sign-in window, the
+  connection test, Vault Setup and the problems in words;
 - `src/WindowsAuthenticator`: the Windows Forms app;
 - `tests/Totp.Tests` and `tests/Vault.Tests`: the tests of the libraries.
 
@@ -110,8 +112,7 @@ The words follow the method:
 | Username and password, AppRole | Not logged in, Logging in..., Logged in | **Log In** | **Log Out** |
 | OIDC | Signed out, Signing in..., Signed in | **Sign In** | **Sign Out** |
 
-The accepted, logged-in or signed-in state names the time its token ends, when it has one. A
-token, password or AppRole vault also authenticates by itself when a code is needed; an OIDC
+A token, password or AppRole vault also authenticates by itself when a code is needed; an OIDC
 vault is signed in with its button after each start of the app.
 
 ## Adding an account
@@ -144,9 +145,9 @@ read these entries.
 
 An account can take its codes from the TOTP secrets engine of a Vault server, which then holds
 the secret and the app never sees it. The app has any number of vaults, each a connection to one
-server with its own authentication, and any number of keys of each. A Vault account looks and works
-like any other: it has a window and can be copied; its code is fetched from Vault once for each period
-while its window is open.
+server with its own authentication, and any number of keys of each. A Vault account looks and
+works like any other: it has a window and can be copied; its code is fetched from Vault once for
+each period while its window is open.
 
 ### The vaults
 
@@ -162,10 +163,15 @@ The page of a vault in Settings asks for:
   - **Username and password**: the user name is a setting and the password is kept in Credential
     Manager;
   - **AppRole**: the RoleID is a setting and the SecretID is kept in Credential Manager;
-  - **OIDC (browser)**: the role, and the port of the redirect listener, 8250 by default. Nothing
-    is kept in Credential Manager: Sign In opens the browser and the identity provider signs the
-    user in. The token lives in memory, so the sign-in is repeated after each start of the app and
-    when the token ends.
+  - **OIDC**: the role, and the port of the redirect URI, 8250 by default. Nothing is kept in
+    Credential Manager: Sign In opens a window of the app with the identity provider's pages, and
+    the provider signs the user in there. The window shows the host of the page, loads pages over
+    HTTPS alone, and ends the sign-in itself when the provider redirects to the redirect URI, so
+    nothing listens on the port and no page is loaded from it. Closing the window cancels the
+    sign-in. The provider's cookies are kept in the app's own WebView2 folder,
+    `%LOCALAPPDATA%\pl.waw.koszewscy\WindowsAuthenticator\WebView2`, apart from Edge's, so a later
+    sign-in is often one click. The token lives in memory, so the sign-in is repeated after each
+    start of the app and when the token ends.
 
 An empty credential field keeps the credential stored before. The settings of a vault are kept in
 the registry under
@@ -176,8 +182,7 @@ from Vault are kept under `...\WindowsAuthenticator\VaultAccounts`, each with it
 and hold nothing secret. Removing a vault deletes its settings, its credential and its accounts;
 the keys stay in Vault.
 
-Vaults authenticate independently, so accounts of several servers show codes at once. Two OIDC
-vaults with the same callback port cannot sign in at the same moment; give them different ports.
+Vaults authenticate independently, so accounts of several servers show codes at once.
 
 With a token, password or AppRole the app authenticates when a code is needed, and again when
 Vault refuses the token; a renewable token is renewed when half of its lease has passed. A code that

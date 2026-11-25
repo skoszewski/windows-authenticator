@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 - 2026-11-25 14:13:16 +0100
+
+feature: an OIDC vault signs in in a window of the app, which takes the identity provider's redirect
+itself, instead of the browser, and the state of a vault names no time at which it would end.
+
+- Sign In to an OIDC vault opens a window with the identity provider's pages. It shows the host of
+  the page, loads pages over HTTPS only, and closes itself when the sign-in is done; closing it
+  cancels the sign-in without a problem.
+- The redirect to the redirect URI is taken inside the window, so nothing listens on a port, no
+  page is loaded from localhost, and two OIDC vaults can use the same port.
+- The identity provider's cookies are kept in the app's own WebView2 folder, apart from Edge's, so
+  a later sign-in is often one click.
+- A page that fails to load, such as one with an untrusted certificate, is explained in the
+  window, without WebView2's warning page.
+- The OIDC sign-in needs the Microsoft Edge WebView2 Runtime; without it, the sign-in fails with a
+  problem that says so.
+- The published folder holds the WebView2 core and Windows Forms assemblies and its loader, and
+  not its WPF assembly, which the app does not use.
+- The method is called OIDC, and the Callback port setting is called Redirect URI port; it only
+  builds the redirect URI that the OIDC role allows, so no vault needs reconfiguring.
+- The state of a vault's page reads Token accepted, Logged in or Signed in alone, without the
+  time of day at which the current token ends.
+
 ## 0.3.1 - 2026-11-25 13:24:52 +0100
 
 fix: the authentication of a vault and its messages are named after what happens, and no message

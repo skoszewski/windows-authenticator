@@ -61,81 +61,61 @@ public sealed class RequestTests
         Assert.IsFalse(await VaultDiagnostics.ResolvesToLoopbackAsync(host));
 }
 
-/// <summary>The listener of the OIDC redirect.</summary>
+/// <summary>The rules of the OIDC sign-in window: which pages load and which address ends the sign-in.</summary>
 [TestClass]
-public sealed class OidcCallbackTests
+public sealed class OidcSignInPolicyTests
 {
+    private static readonly OidcSignInPolicy Policy = new(new Uri("http://localhost:8250/oidc/callback"));
+
     [TestMethod]
-    public void ParsesTheRequestLine()
+    public void TheRedirectEndsTheSignInWithItsCallback() =>
+        Assert.AreEqual(new OidcNavigation.Callback(new OidcCallback("abc", "x y", null)),
+                        Policy.Decide("http://localhost:8250/oidc/callback?state=abc&code=x%20y"));
+
+    [TestMethod]
+    public void AProviderErrorIsCarriedByTheCallback()
     {
-        const string request = "GET /oidc/callback?state=abc&code=x%20y HTTP/1.1\r\nHost: localhost:8250\r\n\r\n";
-        Assert.AreEqual(new OidcCallback("abc", "x y", null), OidcCallbackListener.Parse(request));
+        Assert.AreEqual(new OidcNavigation.Callback(new OidcCallback("s", null, "No way")),
+                        Policy.Decide("http://localhost:8250/oidc/callback?error=access_denied&error_description=No%20way&state=s"));
+        Assert.AreEqual(new OidcNavigation.Callback(new OidcCallback(null, null, "access_denied")),
+                        Policy.Decide("http://localhost:8250/oidc/callback?error=access_denied"));
     }
 
     [TestMethod]
-    public void ParsesAProviderError()
-    {
-        const string request = "GET /oidc/callback?error=access_denied&error_description=No%20way&state=s HTTP/1.1\r\n\r\n";
-        Assert.AreEqual("No way", OidcCallbackListener.Parse(request)?.Error);
-    }
+    public void TheHostOfTheRedirectIsComparedWithoutCase() =>
+        Assert.AreEqual(new OidcNavigation.Callback(new OidcCallback(null, "c", null)),
+                        Policy.Decide("http://LOCALHOST:8250/oidc/callback?code=c"));
 
     [TestMethod]
-    [DataRow("GET /favicon.ico HTTP/1.1\r\n\r\n")]
-    [DataRow("POST /oidc/callback HTTP/1.1\r\n\r\n")]
-    [DataRow("")]
-    public void IgnoresOtherRequests(string request) => Assert.IsNull(OidcCallbackListener.Parse(request));
+    [DataRow("http://localhost:9999/oidc/callback?code=c")]
+    [DataRow("http://localhost:8250/other?code=c")]
+    [DataRow("http://127.0.0.1:8250/oidc/callback?code=c")]
+    [DataRow("http://evil.example.com:8250/oidc/callback?code=c")]
+    public void ALookalikeOfTheRedirectIsNotTheCallback(string address) =>
+        Assert.IsInstanceOfType<OidcNavigation.Block>(Policy.Decide(address));
 
     [TestMethod]
-    [DataRow("127.0.0.1")]
-    [DataRow("[::1]")]
-    public async Task ReceivesTheBrowsersRedirect(string host)
-    {
-        using var listener = new OidcCallbackListener(18250);
-        listener.Start();
-        var callback = listener.CallbackAsync(TimeSpan.FromSeconds(5));
-
-        using var http = new HttpClient();
-        using var other = await http.GetAsync($"http://{host}:18250/favicon.ico");
-        Assert.AreEqual(HttpStatusCode.NotFound, other.StatusCode);
-        using var response = await http.GetAsync($"http://{host}:18250/oidc/callback?state=s1&code=c1");
-        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-        StringAssert.Contains(await response.Content.ReadAsStringAsync(), "You can close this tab");
-        Assert.AreEqual(new OidcCallback("s1", "c1", null), await callback);
-    }
+    [DataRow("https://login.example.com/authorize?x=1")]
+    [DataRow("https://login.example.com:8443/")]
+    [DataRow("about:blank")]
+    public void ASecurePageLoads(string address) =>
+        Assert.AreEqual(new OidcNavigation.Allow(), Policy.Decide(address));
 
     [TestMethod]
-    public async Task AnIdleConnectionDoesNotHoldUpTheRedirect()
-    {
-        using var listener = new OidcCallbackListener(18253);
-        listener.Start();
-        var callback = listener.CallbackAsync(TimeSpan.FromSeconds(5));
-
-        using var idle = new TcpClient();
-        await idle.ConnectAsync(IPAddress.Loopback, 18253);
-        using var http = new HttpClient();
-        using var response = await http.GetAsync("http://127.0.0.1:18253/oidc/callback?state=s2&code=c2");
-        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-        Assert.AreEqual(new OidcCallback("s2", "c2", null), await callback);
-    }
+    [DataRow("http://login.example.com/authorize")]
+    [DataRow("data:text/html,hello")]
+    [DataRow("file:///etc/hosts")]
+    [DataRow("javascript:alert(1)")]
+    [DataRow("windowsauthenticator://callback")]
+    [DataRow("about:srcdoc")]
+    [DataRow(null)]
+    public void AnyOtherPageIsBlocked(string? address) =>
+        Assert.IsInstanceOfType<OidcNavigation.Block>(Policy.Decide(address));
 
     [TestMethod]
-    public async Task TimesOutWithoutARedirect()
-    {
-        using var listener = new OidcCallbackListener(18251);
-        listener.Start();
-        var error = await Assert.ThrowsExactlyAsync<VaultException>(() => listener.CallbackAsync(TimeSpan.FromMilliseconds(300)));
-        Assert.AreEqual(VaultErrorKind.Oidc, error.Kind);
-    }
-
-    [TestMethod]
-    public void APortInUseIsSaidInWords()
-    {
-        using var first = new OidcCallbackListener(18252);
-        first.Start();
-        using var second = new OidcCallbackListener(18252);
-        var error = Assert.ThrowsExactly<SocketException>(second.Start);
-        Assert.AreEqual("The callback port is in use", VaultProblem.From(error).Title);
-    }
+    public void ABlockedPlainHttpPageIsNamed() =>
+        Assert.AreEqual(new OidcNavigation.Block("The page login.example.com is not served over HTTPS."),
+                        Policy.Decide("http://login.example.com/authorize"));
 }
 
 /// <summary>The problems of failed calls, in words.</summary>

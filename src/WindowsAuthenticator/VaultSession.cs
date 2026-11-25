@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Web;
 using Vault;
 
@@ -25,6 +24,12 @@ internal sealed class SessionException(string message, VaultProblem problem) : E
             new VaultProblem(VaultProblemKind.Address, "A setting is not valid", $"{name} is not valid.",
                              "Give the vault a valid value for it."));
 
+    public static SessionException NoWebView2Runtime() =>
+        new("The WebView2 Runtime is not installed.",
+            new VaultProblem(VaultProblemKind.Other, "The WebView2 Runtime is not installed",
+                             "The OIDC sign-in window needs the Microsoft Edge WebView2 Runtime, which this computer lacks.",
+                             "Install the Microsoft Edge WebView2 Runtime, and sign in again."));
+
     /// <summary>A Credential Manager failure while the credential was read.</summary>
     public static SessionException CredentialStore(CredentialStoreException error) =>
         new(error.Message,
@@ -50,7 +55,7 @@ internal sealed class VaultSession(VaultProfile profile)
     private bool worked;
     private VaultToken? token;
     private Task? signIn;
-    private CancellationTokenSource? browserSignIn;
+    private OidcSignInWindow? signInWindow;
 
     public VaultProfile Profile { get; private set; } = profile;
 
@@ -58,9 +63,6 @@ internal sealed class VaultSession(VaultProfile profile)
 
     /// <summary>The problem of the last call, while the state is <see cref="VaultState.Failed"/>.</summary>
     public VaultProblem? Problem { get; private set; }
-
-    /// <summary>When the token of a signed-in vault ends; null for a token without an end.</summary>
-    public DateTimeOffset? SignedInUntil { get; private set; }
 
     /// <summary>When the last call to the vault ended, in success or in failure.</summary>
     public DateTimeOffset? LastAttempt { get; private set; }
@@ -80,10 +82,10 @@ internal sealed class VaultSession(VaultProfile profile)
         SignOut();
     }
 
-    /// <summary>Drops the token and stops a sign-in waiting for the browser.</summary>
+    /// <summary>Drops the token and closes a sign-in window that is open.</summary>
     public void SignOut()
     {
-        browserSignIn?.Cancel();
+        signInWindow?.Cancel();
         token = null;
         worked = false;
         SetState(VaultState.SignedOut);
@@ -93,7 +95,6 @@ internal sealed class VaultSession(VaultProfile profile)
     {
         State = state;
         Problem = problem;
-        SignedInUntil = state == VaultState.SignedIn ? token?.Expires : null;
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
@@ -125,7 +126,7 @@ internal sealed class VaultSession(VaultProfile profile)
     {
         worked = true;
         LastAttempt = DateTimeOffset.Now;
-        if (State != VaultState.SignedIn || SignedInUntil != token?.Expires)
+        if (State != VaultState.SignedIn)
         {
             SetState(VaultState.SignedIn);
         }
@@ -201,39 +202,37 @@ internal sealed class VaultSession(VaultProfile profile)
         };
     }
 
-    /// <summary>Signs in through the browser: the identity provider redirects to a listener of this app.</summary>
+    /// <summary>Signs in in a window of the app, which takes the redirect of the identity provider itself.</summary>
     private async Task<VaultToken> OidcLoginAsync(VaultClient client)
     {
         var clientNonce = Guid.NewGuid().ToString("D");
-        using var cancel = new CancellationTokenSource();
-        browserSignIn = cancel;
-        using var listener = new OidcCallbackListener(Configuration.OidcPort);
+        var url = await client.OidcAuthUrlAsync(Configuration.OidcRole, Configuration.OidcRedirectUri, clientNonce);
+        var query = HttpUtility.ParseQueryString(url.Query);
+        if (query["state"] is not { } state || query["nonce"] is not { } nonce)
+        {
+            throw VaultException.Oidc("Vault's authorisation URL holds no state or nonce.");
+        }
+
+        var window = new OidcSignInWindow();
+        signInWindow = window;
+        OidcCallback callback;
         try
         {
-            listener.Start();
-            var url = await client.OidcAuthUrlAsync(Configuration.OidcRole, Configuration.OidcRedirectUri, clientNonce);
-            var query = HttpUtility.ParseQueryString(url.Query);
-            if (query["state"] is not { } state || query["nonce"] is not { } nonce)
-            {
-                throw VaultException.Oidc("Vault's authorisation URL holds no state or nonce.");
-            }
-            Process.Start(new ProcessStartInfo(url.AbsoluteUri) { UseShellExecute = true })?.Dispose();
-
-            var callback = await listener.CallbackAsync(cancellationToken: cancel.Token);
-            if (callback.Error is { } error)
-            {
-                throw VaultException.Oidc(error);
-            }
-            if (callback.Code is not { } code || callback.State != state)
-            {
-                throw VaultException.Oidc("The browser's answer does not belong to this sign-in.");
-            }
-            return await client.OidcCallbackAsync(state, nonce, code, clientNonce);
+            callback = await window.RunAsync(url, new Uri(Configuration.OidcRedirectUri), $"Sign in to {Profile.Name}");
         }
         finally
         {
-            browserSignIn = null;
+            signInWindow = null;
         }
+        if (callback.Error is { } error)
+        {
+            throw VaultException.Oidc(error);
+        }
+        if (callback.Code is not { } code || callback.State != state)
+        {
+            throw VaultException.Oidc("The identity provider's answer does not belong to this sign-in.");
+        }
+        return await client.OidcCallbackAsync(state, nonce, code, clientNonce);
     }
 
     /// <summary>
@@ -293,7 +292,7 @@ internal sealed class VaultSession(VaultProfile profile)
 
     /// <summary>
     /// A token Vault refuses is replaced once by a new sign-in, unless the token itself is the credential or the
-    /// sign-in is through the browser.
+    /// sign-in is OIDC.
     /// </summary>
     private async Task<T> PerformAsync<T>(Func<VaultClient, Task<T>> call)
     {
