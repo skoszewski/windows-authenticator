@@ -42,10 +42,11 @@ internal sealed class OidcSignInWindow : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(host);
-        layout.Controls.Add(error);
+        // Fixed cells keep the view in the filling row while the error line is hidden.
+        layout.Controls.Add(host, 0, 0);
+        layout.Controls.Add(error, 0, 1);
         view.Margin = new Padding(0, 8, 0, 0);
-        layout.Controls.Add(view);
+        layout.Controls.Add(view, 0, 2);
         Controls.Add(layout);
 
         ClientSizeChanged += (_, _) => error.MaximumSize = new Size(Math.Max(ClientSize.Width - 24, 1), 0);

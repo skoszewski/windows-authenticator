@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 - 2026-11-25 14:33:01 +0100
+
+fix: the OIDC sign-in window shows the identity provider's page in the whole window.
+
+- The page of the sign-in window fills the space under its host line, where it was a line one
+  pixel high.
+
 ## 0.4.0 - 2026-11-25 14:13:16 +0100
 
 feature: an OIDC vault signs in in a window of the app, which takes the identity provider's redirect
