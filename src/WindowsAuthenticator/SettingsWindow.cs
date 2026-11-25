@@ -25,6 +25,7 @@ internal sealed class SettingsWindow : Form
     private readonly Button removeAccount = new() { Text = "Remove", AutoSize = true, Enabled = false };
     private readonly Button removeVault = new() { Text = "Remove", AutoSize = true, Enabled = false };
     private readonly Font bold;
+    private readonly List<(Label Label, bool Wide)> wrapping = [];
     private VaultEditor? editor;
     private bool refreshing;
     private bool quitting;
@@ -55,9 +56,13 @@ internal sealed class SettingsWindow : Form
         }
         accounts.SmallImageList = images;
         vaults.SmallImageList = images;
-        accounts.Columns.Add("Account", 170);
-        accounts.Columns.Add("Store", 130);
-        vaults.Columns.Add("Vault", 200);
+        accounts.Columns.Add("Account");
+        accounts.Columns.Add("Store");
+        vaults.Columns.Add("Vault");
+        foreach (var list in new[] { accounts, vaults })
+        {
+            list.ClientSizeChanged += (_, _) => FitColumns(list);
+        }
 
         addMenu.Items.Add("Account...", null, (_, _) => Dialogs.AddAccount(store, this));
         addMenu.Items.Add("From QR Code in Clipboard", null, (_, _) => Dialogs.AddAccountFromClipboard(store, this));
@@ -110,6 +115,13 @@ internal sealed class SettingsWindow : Form
                 ShowVaultPage(session);
             }
         };
+        accountDetails.ClientSizeChanged += (_, _) =>
+        {
+            foreach (var (label, wide) in wrapping)
+            {
+                WrapLabel(label, wide);
+            }
+        };
         store.Changed += (_, _) => RefreshLists();
         RefreshLists();
         ShowAccountDetails();
@@ -137,10 +149,43 @@ internal sealed class SettingsWindow : Form
         return bitmap;
     }
 
-    /// <summary>The list with its buttons under it on the left, and the details on the right.</summary>
-    private static SplitContainer Split(ListView list, Button add, Button remove, Control details)
+    /// <summary>Shares the width of the list among its columns: the first takes 55% of two, a single one all of it.</summary>
+    private static void FitColumns(ListView list)
     {
-        var split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1, SplitterDistance = 300 };
+        var width = list.ClientSize.Width;
+        if (width <= 0)
+        {
+            return;
+        }
+        if (list.Columns.Count == 1)
+        {
+            list.Columns[0].Width = width;
+            return;
+        }
+        list.Columns[0].Width = width * 55 / 100;
+        list.Columns[1].Width = width - list.Columns[0].Width;
+    }
+
+    /// <summary>
+    /// The list with its buttons under it on the left, and the details on the right. The list gets two fifths of
+    /// the width once the window is laid out, and keeps its width when the window is resized.
+    /// </summary>
+    private SplitContainer Split(ListView list, Button add, Button remove, Control details)
+    {
+        var split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1 };
+        var minimum = LogicalToDeviceUnits(220);
+        var placed = false;
+        split.SizeChanged += (_, _) =>
+        {
+            if (placed || split.Width < minimum * 2)
+            {
+                return;
+            }
+            placed = true;
+            split.Panel1MinSize = minimum;
+            split.Panel2MinSize = minimum;
+            split.SplitterDistance = Math.Max(minimum, split.Width * 2 / 5);
+        };
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Bottom, Padding = new Padding(0, 4, 0, 4) };
         buttons.Controls.Add(add);
         buttons.Controls.Add(remove);
@@ -252,6 +297,7 @@ internal sealed class SettingsWindow : Form
         {
             control.Dispose();
         }
+        wrapping.Clear();
         if (account is null)
         {
             accountDetails.Controls.Add(Placeholder("Select an account, or add one."));
@@ -275,7 +321,7 @@ internal sealed class SettingsWindow : Form
         void Row(string name, string value)
         {
             layout.Controls.Add(new Label { Text = name, AutoSize = true });
-            layout.Controls.Add(new Label { Text = value, AutoSize = true, MaximumSize = new Size(380, 0) });
+            layout.Controls.Add(Wrapped(new Label { Text = value, AutoSize = true }, wide: false));
         }
         void Wide(Control control)
         {
@@ -288,8 +334,8 @@ internal sealed class SettingsWindow : Form
         {
             Heading("Problem");
             Wide(new Label { Text = problem.Title, AutoSize = true, ForeColor = Color.Firebrick });
-            Wide(new Label { Text = problem.Detail, AutoSize = true, MaximumSize = new Size(480, 0) });
-            Wide(new Label { Text = problem.Suggestion, AutoSize = true, MaximumSize = new Size(480, 0), ForeColor = SystemColors.GrayText });
+            Wide(Wrapped(new Label { Text = problem.Detail, AutoSize = true }, wide: true));
+            Wide(Wrapped(new Label { Text = problem.Suggestion, AutoSize = true, ForeColor = SystemColors.GrayText }, wide: true));
             if (vaultKey is not null && store.Vault(vaultKey.Profile) is not null)
             {
                 var showVault = new Button { Text = "Show Vault", AutoSize = true };
@@ -333,6 +379,24 @@ internal sealed class SettingsWindow : Form
         Wide(buttons);
         accountDetails.Controls.Add(layout);
         accountDetails.ResumeLayout();
+    }
+
+    /// <summary>The label, wrapped at the width of the account's page, and kept wrapped at it when the page is resized.</summary>
+    private Label Wrapped(Label label, bool wide)
+    {
+        wrapping.Add((label, wide));
+        WrapLabel(label, wide);
+        return label;
+    }
+
+    /// <summary>
+    /// Wraps a label at the width of the account's page: a label over both columns at the page less its margins, a
+    /// value at the page less the column of names.
+    /// </summary>
+    private void WrapLabel(Label label, bool wide)
+    {
+        var width = accountDetails.ClientSize.Width - LogicalToDeviceUnits(wide ? 40 : 160);
+        label.MaximumSize = new Size(Math.Max(width, LogicalToDeviceUnits(120)), 0);
     }
 
     private static Label Placeholder(string text) => new()

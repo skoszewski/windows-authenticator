@@ -39,7 +39,7 @@ internal sealed class VaultEditor : UserControl
     private readonly TextBox credential = new() { UseSystemPasswordChar = true };
     private readonly Label credentialLabel = new() { AutoSize = true, Anchor = AnchorStyles.Left };
     private readonly Label status = new() { AutoSize = true, Anchor = AnchorStyles.Left };
-    private readonly Label problem = new() { AutoSize = true, MaximumSize = new Size(420, 0) };
+    private readonly Label problem = new() { AutoSize = true };
     private readonly Label lastAttempt = new() { AutoSize = true };
     private readonly Button copyDetails = new() { Text = "Copy Details", AutoSize = true };
     private readonly Button signIn = new() { Text = "Sign In", AutoSize = true };
@@ -49,18 +49,22 @@ internal sealed class VaultEditor : UserControl
     {
         Multiline = true,
         ReadOnly = true,
-        ScrollBars = ScrollBars.Vertical,
-        Height = 110,
+        ScrollBars = ScrollBars.Both,
+        WordWrap = false,
+        Dock = DockStyle.Fill,
         Visible = false,
     };
-    private readonly Label message = new() { AutoSize = true, ForeColor = Color.Firebrick, MaximumSize = new Size(420, 0) };
+    private readonly Label message = new() { AutoSize = true, ForeColor = Color.Firebrick };
     private readonly Dictionary<Control, Label> labels = [];
     private readonly Font bold;
+    private readonly Font fixedWidth = new("Consolas", 9f);
 
     public VaultEditor(AccountStore store, VaultSession? session)
     {
         this.store = store;
         bold = new Font(Font, FontStyle.Bold);
+        checks.Font = fixedWidth;
+        checks.Height = LogicalToDeviceUnits(170);
         Session = session;
         AutoScroll = true;
         Dock = DockStyle.Fill;
@@ -113,6 +117,8 @@ internal sealed class VaultEditor : UserControl
             }
         };
         test.Click += async (_, _) => await TestAsync();
+        ClientSizeChanged += (_, _) => WrapLabels();
+        WrapLabels();
         Revert();
     }
 
@@ -121,6 +127,13 @@ internal sealed class VaultEditor : UserControl
 
     /// <summary>Raised when the vault is saved.</summary>
     public event EventHandler? Saved;
+
+    /// <summary>Wraps the problem and the message at the width of the page less its margins.</summary>
+    private void WrapLabels()
+    {
+        var width = Math.Max(ClientSize.Width - LogicalToDeviceUnits(40), LogicalToDeviceUnits(160));
+        problem.MaximumSize = message.MaximumSize = new Size(width, 0);
+    }
 
     private static Control Fill(Control control)
     {
@@ -349,6 +362,7 @@ internal sealed class VaultEditor : UserControl
         if (disposing)
         {
             bold.Dispose();
+            fixedWidth.Dispose();
         }
         base.Dispose(disposing);
     }

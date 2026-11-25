@@ -16,6 +16,7 @@ public sealed class OidcCallbackListener : IDisposable
     public const string CallbackPath = "/oidc/callback";
     private const int MaxRequestLength = 16384;
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
     private readonly List<TcpListener> listeners = [];
     private readonly int port;
@@ -62,36 +63,21 @@ public sealed class OidcCallbackListener : IDisposable
 
     /// <summary>
     /// Waits for the redirect, answering every other request with 404; fails when the timeout passes and stops
-    /// when the token is cancelled.
+    /// when the token is cancelled. Each connection is served on its own, so a connection a browser opens in
+    /// advance and sends nothing on does not hold up the one that brings the redirect.
     /// </summary>
     public async Task<OidcCallback> CallbackAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout ?? DefaultTimeout);
-        var pending = listeners.ToDictionary(listener => listener.AcceptTcpClientAsync(deadline.Token).AsTask());
+        var found = new TaskCompletionSource<OidcCallback>(TaskCreationOptions.RunContinuationsAsynchronously);
+        foreach (var listener in listeners)
+        {
+            _ = AcceptAsync(listener, found, deadline.Token);
+        }
         try
         {
-            while (true)
-            {
-                var accepted = await Task.WhenAny(pending.Keys).ConfigureAwait(false);
-                var listener = pending[accepted];
-                pending.Remove(accepted);
-                using (var client = await accepted.ConfigureAwait(false))
-                {
-                    try
-                    {
-                        if (await AnswerAsync(client, deadline.Token).ConfigureAwait(false) is { } callback)
-                        {
-                            return callback;
-                        }
-                    }
-                    catch (Exception error) when (error is IOException or SocketException)
-                    {
-                        // A connection that broke off is not the redirect; the next one is waited for.
-                    }
-                }
-                pending[listener.AcceptTcpClientAsync(deadline.Token).AsTask()] = listener;
-            }
+            return await found.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -100,6 +86,49 @@ public sealed class OidcCallbackListener : IDisposable
         finally
         {
             await deadline.CancelAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Accepts the connections of the listener until the token is cancelled, serving each on its own.</summary>
+    private static async Task AcceptAsync(TcpListener listener, TaskCompletionSource<OidcCallback> found,
+                                          CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (true)
+            {
+                var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                _ = ServeAsync(client, found, cancellationToken);
+            }
+        }
+        catch (Exception error) when (error is OperationCanceledException or ObjectDisposedException or SocketException)
+        {
+            // The wait ended, or the listener was stopped.
+        }
+    }
+
+    /// <summary>
+    /// Answers one connection and reports the redirect; a connection that sends no request line within
+    /// <see cref="RequestTimeout"/>, or breaks off, is closed.
+    /// </summary>
+    private static async Task ServeAsync(TcpClient client, TaskCompletionSource<OidcCallback> found,
+                                         CancellationToken cancellationToken)
+    {
+        using (client)
+        using (var idle = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            idle.CancelAfter(RequestTimeout);
+            try
+            {
+                if (await AnswerAsync(client, idle.Token).ConfigureAwait(false) is { } callback)
+                {
+                    found.TrySetResult(callback);
+                }
+            }
+            catch (Exception error) when (error is IOException or SocketException or OperationCanceledException)
+            {
+                // A connection that is idle or broke off is not the redirect.
+            }
         }
     }
 

@@ -166,9 +166,12 @@ The redirect is received as `vault login -method=oidc` does it: the redirect URI
 `http://localhost:<port>/oidc/callback`, 8250 by default, which the role's `allowed_redirect_uris`
 must hold. A browser may resolve `localhost` to `::1` or to `127.0.0.1`, so the listener is a
 `TcpListener` on both loopback addresses, not `HttpListener`, which works through `http.sys` on
-Windows and differently on the systems the tests also run on. It answers each request, 404 for any but the
-callback, and stops at the callback. The state of the authorisation URL is compared with the state
-of the redirect before the code is passed to Vault.
+Windows and differently on the systems the tests also run on. It answers each request, 404 for any
+but the callback, and stops at the callback. Each connection is served on its own and closed when it
+sends no request line within 10 seconds: browsers open connections in advance and send nothing on
+some of them, and a listener that waited on such a connection would never read the redirect on the
+next one. The state of the authorisation URL is compared with the state of the redirect before the
+code is passed to Vault.
 
 ## Vault codes are fetched, never computed
 

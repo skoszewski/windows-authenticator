@@ -104,6 +104,21 @@ public sealed class OidcCallbackTests
     }
 
     [TestMethod]
+    public async Task AnIdleConnectionDoesNotHoldUpTheRedirect()
+    {
+        using var listener = new OidcCallbackListener(18253);
+        listener.Start();
+        var callback = listener.CallbackAsync(TimeSpan.FromSeconds(5));
+
+        using var idle = new TcpClient();
+        await idle.ConnectAsync(IPAddress.Loopback, 18253);
+        using var http = new HttpClient();
+        using var response = await http.GetAsync("http://127.0.0.1:18253/oidc/callback?state=s2&code=c2");
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.AreEqual(new OidcCallback("s2", "c2", null), await callback);
+    }
+
+    [TestMethod]
     public async Task TimesOutWithoutARedirect()
     {
         using var listener = new OidcCallbackListener(18251);

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.1 - 2026-11-25 10:56:24 +0100
+
+fix: the OIDC sign-in completes when the browser opens a connection in advance, and the lists and
+the Test Connection log of Settings are wide enough to read.
+
+- The OIDC redirect listener serves each connection on its own and closes one that sends no
+  request within 10 seconds, so an idle connection a browser opens in advance no longer holds up
+  the redirect until the sign-in times out.
+- The lists of the Accounts and Vaults tabs take two fifths of the window, at least 220 pixels
+  scaled to the display, and their columns fill the list's width.
+- The Test Connection log takes the width of the vault's page and about ten lines, in a
+  fixed-width font, with scroll bars and no wrapping.
+- The problem and message texts of a vault's page and the texts of an account's page wrap at the
+  width of the page.
+
 ## 0.2.0 - 2026-11-25 10:17:40 +0100
 
 feature: HashiCorp Vault as a TOTP backend with several vaults, a Settings window for the accounts
