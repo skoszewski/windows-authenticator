@@ -39,6 +39,19 @@ internal static class Dialogs
             ? VaultProblem.From(error).Report
             : error.Message;
 
+    /// <summary>
+    /// The steps of a connection test or a setup, one line each with its outcome, and for a step that did not
+    /// pass what is wrong and what to do on the lines under it.
+    /// </summary>
+    public static string FormatChecks(IEnumerable<VaultCheck> checks) =>
+        string.Join(Environment.NewLine, checks.Select(check =>
+        {
+            var line = $"{check.Outcome,-8} {check.Step}: {check.Message}";
+            return check.Problem is { } found
+                ? $"{line}{Environment.NewLine}         {found.Detail}{Environment.NewLine}         {found.Suggestion}"
+                : line;
+        }));
+
     /// <summary>Shows an error as its problem: what is wrong, what happened and what to do.</summary>
     public static void ShowProblem(string heading, Exception error, IWin32Window? owner = null) =>
         ShowError(heading, Describe(error), owner);

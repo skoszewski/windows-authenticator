@@ -131,7 +131,7 @@ public sealed class VaultClient(VaultConfiguration configuration, string? token 
     /// Sends the request and returns the body of a successful answer; other answers are errors carrying
     /// Vault's messages.
     /// </summary>
-    private async Task<byte[]> SendAsync(HttpMethod method, string path,
+    internal async Task<byte[]> SendAsync(HttpMethod method, string path,
                                          IReadOnlyList<KeyValuePair<string, string>>? query = null,
                                          IReadOnlyDictionary<string, string>? body = null)
     {
@@ -401,4 +401,34 @@ public sealed class VaultClient(VaultConfiguration configuration, string? token 
         var data = await SendAsync(HttpMethod.Get, EnginePath($"code/{Escaped(key)}")).ConfigureAwait(false);
         return Decode<DataReply<CodeData>>(data, "a code").Data.Code;
     }
+
+    /// <summary>
+    /// The token of a sign-in with the configured method and credential, the token, the password or the SecretID;
+    /// null for OIDC, which needs the browser. An empty setting or credential the method needs fails as
+    /// <see cref="EmptyValueException"/>.
+    /// </summary>
+    public static async Task<VaultToken?> SignInAsync(VaultConfiguration configuration, string? credential)
+    {
+        static string Required(string? value, string what) =>
+            string.IsNullOrEmpty(value) ? throw new EmptyValueException(what) : value;
+
+        var client = new VaultClient(configuration);
+        return configuration.AuthMethod switch
+        {
+            AuthMethod.Token => await new VaultClient(configuration, Required(credential, "The token"))
+                .LookupSelfAsync().ConfigureAwait(false),
+            AuthMethod.Userpass => await client.LoginUserpassAsync(Required(configuration.Username, "The user name"),
+                                                                   Required(credential, "The password")).ConfigureAwait(false),
+            AuthMethod.Approle => await client.LoginAppRoleAsync(Required(configuration.RoleId, "The RoleID"),
+                                                                 Required(credential, "The SecretID")).ConfigureAwait(false),
+            _ => null,
+        };
+    }
+}
+
+/// <summary>A setting or credential the sign-in method needs and the form leaves empty.</summary>
+public sealed class EmptyValueException(string what) : Exception($"{what} is empty."), IVaultProblemSource
+{
+    public VaultProblem Problem => new(VaultProblemKind.Credential, $"{what} is empty",
+                                       $"The sign-in needs {what.ToLowerInvariant()}.", "Enter it in the vault's settings.");
 }

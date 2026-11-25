@@ -92,13 +92,13 @@ public static class VaultDiagnostics
         VaultToken? token;
         try
         {
-            token = await SignInAsync(configuration, credential).ConfigureAwait(false);
+            token = await VaultClient.SignInAsync(configuration, credential).ConfigureAwait(false);
             checks.Add(token is null
                 ? new VaultCheck("Sign-in", VaultCheckOutcome.Skipped, "OIDC signs in in the browser, from the vault's page.", null)
                 : new VaultCheck("Sign-in", VaultCheckOutcome.Passed,
                                  $"Signed in with the {configuration.AuthMethod.Name()} method.", null));
         }
-        catch (Exception error) when (error is VaultException or EmptyException)
+        catch (Exception error) when (error is VaultException or EmptyValueException)
         {
             checks.Add(new VaultCheck("Sign-in", VaultCheckOutcome.Failed, "The sign-in failed.", VaultProblem.From(error)));
             return checks;
@@ -152,31 +152,5 @@ public static class VaultDiagnostics
             }
         }
         return addresses.Length > 0 && addresses.All(IPAddress.IsLoopback);
-    }
-
-    /// <summary>A setting or credential the method needs and the form leaves empty.</summary>
-    private sealed class EmptyException(string what) : Exception($"{what} is empty."), IVaultProblemSource
-    {
-        public VaultProblem Problem => new(VaultProblemKind.Credential, $"{what} is empty",
-                                           $"The sign-in needs {what.ToLowerInvariant()}.", "Enter it in the vault's settings.");
-    }
-
-    /// <summary>The token of a sign-in with the configured method; null for OIDC, which needs the browser.</summary>
-    private static async Task<VaultToken?> SignInAsync(VaultConfiguration configuration, string? credential)
-    {
-        static string Required(string? value, string what) =>
-            string.IsNullOrEmpty(value) ? throw new EmptyException(what) : value;
-
-        var client = new VaultClient(configuration);
-        return configuration.AuthMethod switch
-        {
-            AuthMethod.Token => await new VaultClient(configuration, Required(credential, "The token"))
-                .LookupSelfAsync().ConfigureAwait(false),
-            AuthMethod.Userpass => await client.LoginUserpassAsync(Required(configuration.Username, "The user name"),
-                                                                   Required(credential, "The password")).ConfigureAwait(false),
-            AuthMethod.Approle => await client.LoginAppRoleAsync(Required(configuration.RoleId, "The RoleID"),
-                                                                 Required(credential, "The SecretID")).ConfigureAwait(false),
-            _ => null,
-        };
     }
 }

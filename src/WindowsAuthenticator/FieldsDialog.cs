@@ -24,6 +24,7 @@ internal class FieldsDialog : Form
         Margin = new Padding(0, 12, 0, 0),
     };
     private readonly Button accept;
+    private readonly Button? cancel;
 
     protected FieldsDialog(string title, string information, string acceptText, bool cancellable = true)
     {
@@ -47,7 +48,7 @@ internal class FieldsDialog : Form
         accept.Click += async (_, _) => await AcceptAsync();
         if (cancellable)
         {
-            var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+            cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
             buttons.Controls.Add(cancel);
             CancelButton = cancel;
         }
@@ -80,6 +81,16 @@ internal class FieldsDialog : Form
 
     /// <summary>Adds a control under the fields.</summary>
     protected void AddControl(Control control) => layout.Controls.Add(control);
+
+    /// <summary>Renames the accept button and the Cancel button.</summary>
+    protected void RenameButtons(string acceptText, string cancelText)
+    {
+        accept.Text = acceptText;
+        if (cancel is not null)
+        {
+            cancel.Text = cancelText;
+        }
+    }
 
     /// <summary>Adds a button left of the accept button.</summary>
     protected Button AddButton(string text)

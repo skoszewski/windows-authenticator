@@ -173,6 +173,25 @@ some of them, and a listener that waited on such a connection would never read t
 next one. The state of the authorisation URL is compared with the state of the redirect before the
 code is passed to Vault.
 
+## Vault Setup writes two policies, replaces nothing unasked, and assigns nothing
+
+Setup enables the TOTP engine and writes `totp_creator` and `totp_user` with the identity the
+vault's page describes, and stops at the first call that fails: Vault's own answer, such as a
+path already in use or a refused write, says what is wrong, and a half-done setup that went on
+would hide it. The identity is the page as typed, like Test Connection, so an administrator's
+token need not be saved as the vault's credential. The sign-in of the page's method is
+`VaultClient.SignInAsync`, which Test Connection and the setup share.
+
+The creator policy holds `read` as well as `create` and `update`, because the app reads a key to
+check that the name is free and to make the account. The user policy holds `read` on keys and
+`list`, beside `read` on codes: reading a key returns its issuer, account name, algorithm, digits
+and period but never the secret, and adding an account from a vault needs them. Neither holds
+`delete` or `sudo`. A user who adds accounts and shows codes needs both policies.
+
+A policy of the same name is not replaced unless the dialog is told to, since a write replaces
+the whole policy of a vault that may use it for more than this. Policies are assigned by the
+vault's administrator, not by the setup, so the setup grants nobody access.
+
 ## Vault codes are fetched, never computed
 
 An account of the Vault TOTP engine has no secret in the app: the code comes from

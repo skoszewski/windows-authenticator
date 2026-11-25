@@ -45,6 +45,7 @@ internal sealed class VaultEditor : UserControl
     private readonly Button signIn = new() { Text = "Sign In", AutoSize = true };
     private readonly Button signOut = new() { Text = "Sign Out", AutoSize = true };
     private readonly Button test = new() { Text = "Test Connection", AutoSize = true };
+    private readonly Button setup = new() { Text = "Vault Setup...", AutoSize = true };
     private readonly TextBox checks = new()
     {
         Multiline = true,
@@ -94,7 +95,7 @@ internal sealed class VaultEditor : UserControl
             Wide(lastAttempt);
             Wide(Buttons(signIn, signOut, copyDetails));
         }
-        Wide(Buttons(test));
+        Wide(Buttons(test, setup));
         Wide(checks);
         Wide(message);
         Wide(Buttons(MakeButton("Save", Save), MakeButton("Revert", Revert)));
@@ -117,9 +118,12 @@ internal sealed class VaultEditor : UserControl
             }
         };
         test.Click += async (_, _) => await TestAsync();
+        setup.Click += (_, _) => OpenSetup();
+        address.TextChanged += (_, _) => setup.Enabled = address.Text.Trim().Length > 0;
         ClientSizeChanged += (_, _) => WrapLabels();
         WrapLabels();
         Revert();
+        setup.Enabled = address.Text.Trim().Length > 0;
     }
 
     /// <summary>The vault of the page; null until a new one is saved.</summary>
@@ -323,14 +327,32 @@ internal sealed class VaultEditor : UserControl
         {
             return;
         }
-        checks.Text = string.Join(Environment.NewLine, results.Select(check =>
-        {
-            var line = $"{check.Outcome,-8} {check.Step}: {check.Message}";
-            return check.Problem is { } found
-                ? $"{line}{Environment.NewLine}         {found.Detail}{Environment.NewLine}         {found.Suggestion}"
-                : line;
-        }));
+        checks.Text = Dialogs.FormatChecks(results);
         test.Enabled = true;
+    }
+
+    /// <summary>
+    /// Opens Vault Setup with the vault as the fields describe it, and the credential as typed or, when none is
+    /// typed, as stored.
+    /// </summary>
+    private void OpenSetup()
+    {
+        VaultConfiguration configuration;
+        string? used;
+        try
+        {
+            configuration = Configuration();
+            var typed = credential.Text;
+            used = typed.Length > 0 || Session is null ? typed : CredentialStore.VaultCredential(Session.Profile.Id);
+        }
+        catch (Exception error) when (error is SessionException || AccountStore.IsStorageFailure(error))
+        {
+            message.Text = Dialogs.Describe(error);
+            return;
+        }
+        message.Text = "";
+        using var dialog = new VaultSetupDialog(configuration, used, Session);
+        dialog.ShowDialog(FindForm());
     }
 
     /// <summary>Shows the state of the saved vault's sign-in and its problem.</summary>

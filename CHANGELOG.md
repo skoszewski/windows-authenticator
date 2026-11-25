@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 - 2026-11-25 11:13:10 +0100
+
+feature: Vault Setup enables the TOTP engine of a vault and writes the policies totp_creator and
+totp_user.
+
+- A Vault Setup... button beside Test Connection opens a dialog that asks for the mount of the
+  TOTP engine, a description, and the names of the two policies, and has the options The engine
+  is already enabled and Replace policies that exist, with Run and Cancel buttons.
+- Run enables the engine at the mount and writes the policies, and lists each step. It stops at
+  the first call that fails, and does not replace a policy that exists unless told to.
+- totp_creator lists keys and creates, updates and reads them; totp_user lists and reads keys and
+  reads codes. The dialog shows both policies as they will be written.
+- The setup runs as the identity the vault's page describes, so an administrator's token can be
+  typed without being saved. It assigns no policy; a Vault administrator assigns them.
+
 ## 0.2.1 - 2026-11-25 10:56:24 +0100
 
 fix: the OIDC sign-in completes when the browser opens a connection in advance, and the lists and

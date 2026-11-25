@@ -210,6 +210,28 @@ A failure is said in words: what is wrong, what happened, and what to do about i
 - Each new problem is appended, without secrets, to
   `%LOCALAPPDATA%\pl.waw.koszewscy\WindowsAuthenticator\vault.log`.
 
+### Vault Setup
+
+**Vault Setup...**, beside Test Connection on the vault's page, prepares a vault for the app. It
+runs as the identity the page describes, with the address, method and credential as typed, so an
+administrator's token can be used without saving it; an OIDC vault uses its current sign-in. The
+identity is taken to hold the rights for the calls, and the setup stops at the first call that
+fails. The dialog asks for:
+
+- the mount of the TOTP engine, taken from the page, and a description;
+- the names of the two policies, `totp_creator` and `totp_user`;
+- **The engine is already enabled**, which skips enabling it and writes the policies alone;
+- **Replace policies that exist**, without which a policy of the same name stops the setup.
+
+**Run** enables the engine at the mount and writes the policies, and the result lists each step.
+The dialog shows the text of both policies as they will be written:
+
+- `totp_creator` lists keys and creates, updates and reads them, which adds and imports a key;
+- `totp_user` lists and reads keys, whose answer holds no secret, and reads codes.
+
+The setup assigns no policy: a Vault administrator assigns them to the users, roles or tokens
+that need them, both to a user who adds accounts and shows codes.
+
 ### What the Vault administrator prepares
 
 - the TOTP engine, with the keys;
