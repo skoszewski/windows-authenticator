@@ -1,0 +1,12 @@
+<Project Sdk="MSTest.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Totp/Totp.csproj" />
+    <ProjectReference Include="../../src/Vault/Vault.csproj" />
+  </ItemGroup>
+
+</Project>

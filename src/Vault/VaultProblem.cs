@@ -1,0 +1,175 @@
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
+
+namespace Vault;
+
+/// <summary>An error that states its own problem, for the errors of the layers above the library.</summary>
+public interface IVaultProblemSource
+{
+    VaultProblem Problem { get; }
+}
+
+/// <summary>The kind of a problem with a Vault.</summary>
+public enum VaultProblemKind
+{
+    Address,
+    Network,
+    Tls,
+    NotSignedIn,
+    Denied,
+    Credential,
+    Server,
+    Response,
+    Other,
+}
+
+/// <summary>
+/// What is wrong with a Vault, in words: the title says what, the detail what happened, and the suggestion what
+/// to do about it.
+/// </summary>
+public sealed record VaultProblem(VaultProblemKind Kind, string Title, string Detail, string Suggestion)
+{
+    /// <summary>The problem as one text, to copy into a report.</summary>
+    public string Report => $"{Title}\n{Detail}\n{Suggestion}";
+
+    /// <summary>The problem of an error of a Vault call, a listener or a layer above.</summary>
+    public static VaultProblem From(Exception error) => error switch
+    {
+        IVaultProblemSource source => source.Problem,
+        VaultException vault => Of(vault),
+        SocketException { SocketErrorCode: SocketError.AddressAlreadyInUse } => new(
+            VaultProblemKind.Network, "The callback port is in use",
+            "Another program, or another OIDC vault, listens on the callback port.",
+            "Choose another callback port in the vault's settings, and in the OIDC role's redirect URIs."),
+        _ => new(VaultProblemKind.Other, "The operation failed", error.Message,
+                 "Try again. If it keeps failing, copy the details into a report."),
+    };
+
+    private static VaultProblem Of(VaultException error) => error.Kind switch
+    {
+        VaultErrorKind.BadAddress => new(VaultProblemKind.Address, "The address is not usable",
+                                         $"\"{error.Value}\" is not a Vault address.",
+                                         "Use the form https://vault.example.com:8200."),
+        VaultErrorKind.Http => OfStatus(error.Status,
+                                        error.Messages.Count == 0 ? "Vault gave no message." : string.Join("; ", error.Messages)),
+        VaultErrorKind.BadResponse => new(VaultProblemKind.Response, "The answer is not from a Vault",
+                                          $"The answer could not be read as {error.Value}.",
+                                          "Check that the address and the port are those of the Vault API, not of a web page or a proxy."),
+        VaultErrorKind.NotSignedIn => new(VaultProblemKind.NotSignedIn, "Not signed in", "The vault has no sign-in.",
+                                          "Sign in from Settings > Vaults."),
+        VaultErrorKind.Oidc => new(VaultProblemKind.Denied, "The browser sign-in failed", error.Value,
+                                   "Sign in again; check the OIDC role and the callback port."),
+        VaultErrorKind.KeyExists => new(VaultProblemKind.Other, "The key exists",
+                                        $"The vault holds a key named {error.Value}.", "Choose another name."),
+        VaultErrorKind.UnsupportedKey => new(VaultProblemKind.Other, "The vault cannot keep this key", error.Value,
+                                             "Use a key of 6 or 8 digits."),
+        VaultErrorKind.Transport => OfTransport(error.Value, error.InnerException, error.Certificate),
+        _ => new(VaultProblemKind.Other, "The operation failed", error.Message,
+                 "Try again. If it keeps failing, copy the details into a report."),
+    };
+
+    private static VaultProblem OfStatus(int status, string said) => status switch
+    {
+        400 => new(VaultProblemKind.Server, "Vault refused the request", said,
+                   "Check the key name and the vault's settings; Vault's message says what is wrong."),
+        403 => new(VaultProblemKind.Denied, "Vault denied the access", said,
+                   "The token may have ended, or its policy lacks this access. Sign in again, or ask for the policy."),
+        404 => new(VaultProblemKind.Server, "Vault does not know the path", said,
+                   "Check the TOTP engine mount and the mount of the sign-in method in the vault's settings."),
+        429 => new(VaultProblemKind.Server, "Vault is busy", said, "Wait and try again."),
+        503 => new(VaultProblemKind.Server, "Vault is sealed or in standby", said,
+                   "Unseal Vault, or use the address of the active node."),
+        _ => new(VaultProblemKind.Server, $"Vault answered {status}", said,
+                 status >= 500 ? "The server has a problem; try again later, and look at its log." : "Check the vault's settings."),
+    };
+
+    /// <summary>The problem of a request that got no HTTP answer from the host.</summary>
+    private static VaultProblem OfTransport(string host, Exception? failure, CertificateErrors? certificate)
+    {
+        if (failure is TaskCanceledException)
+        {
+            return TimedOut(host);
+        }
+        if (failure is not HttpRequestException request)
+        {
+            return ConnectionFailed(failure);
+        }
+        var socket = Inner<SocketException>(request);
+        switch (request.HttpRequestError)
+        {
+            case HttpRequestError.NameResolutionError:
+                return new(VaultProblemKind.Network, "The vault's name does not resolve", $"The name {host} was not found.",
+                           "Check the address, the network and the VPN; try the IP address.");
+            case HttpRequestError.ConnectionError when socket?.SocketErrorCode is SocketError.TimedOut:
+                return TimedOut(host);
+            case HttpRequestError.ConnectionError when socket?.SocketErrorCode is SocketError.NetworkUnreachable
+                                                         or SocketError.NetworkDown or SocketError.HostUnreachable:
+                return new(VaultProblemKind.Network, "The network is down", $"This computer has no route to {host}.",
+                           "Connect to the network or the VPN.");
+            case HttpRequestError.ConnectionError:
+                return new(VaultProblemKind.Network, "Nothing answers at the vault's address",
+                           $"The connection to {host} was refused or blocked.",
+                           "Check the host and the port, that Vault runs, and any firewall or VPN.");
+            case HttpRequestError.SecureConnectionError:
+                return OfCertificate(host, certificate);
+            case HttpRequestError.ResponseEnded:
+                return new(VaultProblemKind.Network, "The connection was lost",
+                           $"The connection to {host} broke while it was in use.",
+                           "Try again; check the network and the server.");
+            case HttpRequestError.InvalidResponse or HttpRequestError.HttpProtocolError:
+                return new(VaultProblemKind.Response, "The answer is not from a Vault",
+                           $"{host} gave an answer that is not valid HTTP.",
+                           "Check that the address and the port are those of the Vault API.");
+            default:
+                return ConnectionFailed(request);
+        }
+    }
+
+    /// <summary>The problem of a TLS handshake, by the errors of the certificate it refused, if any.</summary>
+    private static VaultProblem OfCertificate(string host, CertificateErrors? certificate)
+    {
+        if (certificate is null)
+        {
+            return new(VaultProblemKind.Tls, "The secure connection failed",
+                       $"A TLS connection to {host} could not be made.",
+                       "Check that the address is https and the port serves TLS; a plain HTTP port fails this way when asked for https.");
+        }
+        if (certificate.ChainStatus.HasFlag(X509ChainStatusFlags.NotTimeValid))
+        {
+            return new(VaultProblemKind.Tls, "The vault's certificate is expired or not yet valid",
+                       $"The dates of the certificate of {host} do not include today.",
+                       "Renew the certificate; check the date of this computer.");
+        }
+        if (certificate.PolicyErrors.HasFlag(SslPolicyErrors.RemoteCertificateNameMismatch))
+        {
+            return new(VaultProblemKind.Tls, "The vault's certificate is for another name",
+                       $"The certificate of {host} does not name {host}.",
+                       "Use the name the certificate holds in the address, or issue a certificate for this name.");
+        }
+        return new(VaultProblemKind.Tls, "The vault's certificate is not trusted",
+                   $"The certificate of {host} was not issued by an authority this computer trusts.",
+                   "Trust the issuing CA in the Windows certificate store, and make the server send its intermediate certificates.");
+    }
+
+    private static VaultProblem TimedOut(string host) =>
+        new(VaultProblemKind.Network, "The vault did not answer in time", $"{host} did not answer before the time ran out.",
+            "Check that the host is up and reachable, and the VPN.");
+
+    private static VaultProblem ConnectionFailed(Exception? failure) =>
+        new(VaultProblemKind.Network, "The connection failed", failure?.Message ?? "The request got no answer.",
+            "Check the address and the network, and try again.");
+
+    /// <summary>The first exception of the type among the inner exceptions of the error.</summary>
+    private static T? Inner<T>(Exception error) where T : Exception
+    {
+        for (var inner = error.InnerException; inner is not null; inner = inner.InnerException)
+        {
+            if (inner is T found)
+            {
+                return found;
+            }
+        }
+        return null;
+    }
+}

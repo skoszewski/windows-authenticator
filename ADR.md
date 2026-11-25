@@ -16,9 +16,10 @@ target framework would bring in the Windows SDK projections for nothing.
 
 ## The menu holds no codes
 
-The menu lists the accounts as submenus and is rebuilt from the store each time it opens, which
-also refreshes the Launch at Login tick from the registry. It reads no clock: the codes are shown
-by the code windows alone, refreshed by one Windows Forms timer re-armed at each whole second.
+The menu lists the vaults with a problem and the accounts as submenus, and is rebuilt from the
+store each time it opens, which also refreshes the Launch at Login tick from the registry. It
+reads no clock: the codes are shown by the code windows alone, refreshed by one Windows Forms
+timer re-armed at each whole second, whose tick also starts the fetches of Vault codes.
 
 Mac Authenticator's Show in Menu Bar has no counterpart. The notification area shows an icon and
 no text, a 16-pixel icon cannot hold 6 to 10 readable digits, and a tooltip is seen only while
@@ -90,11 +91,143 @@ blue, green, red and alpha in memory, and passed to `BarcodeReaderGeneric` limit
 starting with `otpauth://` fills the Add Account dialog rather than being added at once, so the
 name can be changed and a duplicate or invalid code is reported the way a typed one is.
 
-## The dialogs are task dialogs
+## The dialogs are task dialogs and forms of fields
 
-Errors, the Remove question and About are `TaskDialog` pages, whose heading and text match the
-message and informative text of the alerts on macOS. Add Account is a form that stays open and
-shows the reason when the input is refused, as the alert loop does on macOS.
+Errors, the Remove questions and About are `TaskDialog` pages, whose heading and text match the
+message and informative text of the alerts on macOS; opened from Settings they are owned by it.
+Add Account, From Vault, Generate in Vault, Import to Vault and the generated key are forms built
+on one base, `FieldsDialog`: labelled fields, an accept button and Cancel. It stays open and shows
+the reason when the action fails, as the alert loop does on macOS, and runs a Vault call with the
+accept button disabled, so the dialog is not accepted twice.
+
+## Settings is a kept window, and the menu holds what is used with the codes
+
+The menu holds what is used while working with codes: the accounts with Copy Code and Show,
+Settings, Launch at Login, About and Quit. Adding, generating, importing and removing accounts,
+and the vaults with their sign-in, are in the Settings window, as on macOS, which keeps the menu
+short. The window is made once with the app and hidden, not closed, when the user closes it, so
+the page and the selection of a vault stay while the app runs; Quit closes it for good. A vault is
+signed in and out from its page, since the menu has no sign-in item.
+
+The lists are `ListView`s with an image list: the warning sign of the system for an account whose
+vault has a problem, and a coloured dot for the state of a vault. The page of an account is built
+again from the store when the store changes; the page of a vault is a `VaultEditor` kept while the
+vault is selected, so a change of the vault's state refreshes its status and leaves the typed
+fields alone.
+
+## The Vault client is a library on HttpClient, tested against a dev server
+
+The Vault client, the OIDC redirect listener, the connection test and the problem texts are the
+library `Vault`, which targets plain `net10.0` and uses no Windows API, so its tests run on any
+OS. Requests go through `HttpClient` with `SocketsHttpHandler`, so the system trust store applies,
+and plain HTTP works for any address, which is the user's choice for that vault. There is one
+client per scheme, host and port, whose certificate validation callback accepts what the system
+accepts and keeps the policy errors and chain status of a certificate it refuses: an
+`HttpRequestException` of `SecureConnectionError` does not tell an untrusted root from an expired
+certificate or a wrong name, and the callback's flags do, without reading localised exception
+texts.
+
+A request that gets no HTTP answer becomes a `VaultException` of the kind `Transport`, with the
+host and the original exception, and `VaultProblem.From` reads its `HttpRequestError`, its inner
+`SocketException` and the certificate errors. Vault's JSON is read with `System.Text.Json` in
+snake case into types whose `required` members make a missing field a `JsonException`, which is
+reported as an answer that is not from a Vault.
+
+`Vault.Tests` start `vault server -dev`, which keeps its storage in memory, once for the test
+assembly in `[AssemblyInitialize]`, and configure it through its HTTP API with a plain
+`HttpClient`, apart from the client under test. The `vault` binary is a requirement of the tests,
+and a missing one fails them. The exchange of the code with an identity provider needs a browser
+sign-in and is checked by hand.
+
+## A vault's settings are in the registry, its credential in Credential Manager
+
+A vault's settings hold no secret and do not fit a credential attribute, whose value is at most
+`CRED_MAX_VALUE_SIZE`, 256 bytes, 128 UTF-16 characters: an address, a namespace and the mounts
+pass that. They are one key per vault under the app's registry key, named by the vault's id, with
+the time it was added for the list order. The credential, a token, password or SecretID, is the
+blob of a generic credential whose target is `pl.waw.koszewscy.WindowsAuthenticator.vault:<id>`,
+which the accounts' filter `pl.waw.koszewscy.WindowsAuthenticator:*` does not match, so listing
+the accounts never reads it. Its user name is the vault's name, so Credential Manager shows which
+vault it belongs to; a rename writes it again. An OIDC vault has no credential.
+
+A Vault account holds nothing secret, only its vault and the name of its key, so it is a registry
+key under `VaultAccounts` and has no credential. Removing a vault removes its accounts, whose keys
+stay in Vault, since they cannot show a code without it.
+
+## The OIDC token is kept in memory and the sign-in is explicit
+
+The identity provider signs the user in, so the app stores no credential for OIDC, and it keeps
+the resulting Vault token in memory alone: a sign-in is repeated after each start and when the
+token ends. The browser is opened from Sign In only, never because a code was needed, so a window
+opening in the background cannot start a login nobody expects. The other methods sign in by
+themselves, since they need no user.
+
+The redirect is received as `vault login -method=oidc` does it: the redirect URI is
+`http://localhost:<port>/oidc/callback`, 8250 by default, which the role's `allowed_redirect_uris`
+must hold. A browser may resolve `localhost` to `::1` or to `127.0.0.1`, so the listener is a
+`TcpListener` on both loopback addresses, not `HttpListener`, which works through `http.sys` on
+Windows and differently on the systems the tests also run on. It answers each request, 404 for any but the
+callback, and stops at the callback. The state of the authorisation URL is compared with the state
+of the redirect before the code is passed to Vault.
+
+## Vault codes are fetched, never computed
+
+An account of the Vault TOTP engine has no secret in the app: the code comes from
+`GET <mount>/code/<key>`, once for each period of each account whose window is open, at the whole
+second the period changes. The engine's answer holds the code alone, so the algorithm, digits,
+period and issuer are read once, when the key is added, from `GET <mount>/keys/<key>`, and kept
+with the account in the same `algorithm=...&digits=...&period=...` form as a credential's
+attribute. A code is kept with the period count it was fetched for and is shown for that period
+alone, so a stale code is never shown; a failed fetch is not repeated within its period. The
+calls run on the UI thread's synchronisation context, so the store and the sessions need no locks.
+
+## Vault keys are generated or imported only under a new name
+
+`POST <mount>/keys/<key>` replaces the secret of a key that exists, which would silently break
+every account and authenticator using it. The client reads the key first and refuses a name that
+is taken. Generated keys answer with `barcode`, a base64 PNG QR code, and `url`, an otpauth URI;
+both are shown once and never stored, since Vault does not return the secret again. An import is
+limited to what Vault keeps, 6 or 8 digits, and is refused before the call, so no key is stored
+that the app could not show. A failure to add the account after Vault holds the key is reported,
+and does not repeat the write.
+
+## Problems are classified once and shown where the user looks
+
+Every failure of a Vault call goes through `VaultProblem.From` in the library, which turns a
+`VaultException`, a port in use or an app error that states its own problem
+(`IVaultProblemSource`) into a title, a detail and a suggestion. The raw system texts name neither
+the cause nor the next step, and one mapping keeps every surface saying the same thing.
+
+A `VaultSession` records the problem of its last call: a failed state holds it, and a call that
+works returns the state to signed in, so a token vault whose server goes down shows it. The
+session reports a vault that worked and then failed once, until it works again; the store retries
+once a period, and a notification for each retry would be noise.
+
+The user meets a problem where they look: the warning sign on the tray icon with the problem in
+its tooltip, a menu line that opens the vault, the vault's page with the cause and the time of the
+attempt, the account in the list and in its window, and the notification. Test Connection runs the
+steps of a connection one by one on the settings as typed, without a session or a saved setting,
+so a vault can be checked before it is saved and the failing step is named.
+
+The warning icon is the app icon with the system's warning icon drawn over its lower right part,
+written as a one-image `.ico` in memory, so the `Icon` owns its data and no icon handle has to be
+destroyed by hand.
+
+## The notification is a balloon of the NotifyIcon
+
+`NotifyIcon.ShowBalloonTip` shows as a notification on Windows 10 and 11 and raises
+`BalloonTipClicked`, which opens Settings on the vault. The notifications of the Windows App SDK
+or of WinRT would need a versioned Windows target framework and an activator registration, for a
+message that a balloon carries. The title is kept within the 63 characters of `szInfoTitle` and
+the text within 200.
+
+## Problems are logged to a file of the user
+
+Each new problem of a vault is appended to
+`%LOCALAPPDATA%\pl.waw.koszewscy\WindowsAuthenticator\vault.log`, one line with the time, the
+vault, the title and the detail, none of which holds a secret. The Event Log needs a source that
+an administrator registers, which an app copied to a folder does not have. A log that cannot be
+written is skipped, since the problem is shown in the app all the same.
 
 ## The icon is an .ico file drawn by a Swift script
 

@@ -4,7 +4,7 @@ namespace WindowsAuthenticator;
 
 /// <summary>
 /// A small window over the others showing one account's code, the time left of it and a Copy button, or
-/// why the secret could not be read. It does not take activation, so Copy leaves the other app in front.
+/// why the code cannot be shown. It does not take activation, so Copy leaves the other app in front.
 /// </summary>
 internal sealed class CodeWindow : Form
 {
@@ -63,16 +63,15 @@ internal sealed class CodeWindow : Form
         layout.SetColumnSpan(error, 3);
         Controls.Add(layout);
 
-        copy.Click += (_, _) =>
+        copy.Click += async (_, _) =>
         {
             try
             {
-                store.CopyCode(account);
+                await store.CopyCodeAsync(account);
             }
-            catch (Exception failure) when (failure is CredentialStoreException
-                                                    or System.Runtime.InteropServices.ExternalException)
+            catch (Exception failure)
             {
-                Dialogs.ShowError("The code was not copied", failure.Message);
+                Dialogs.ShowProblem("The code was not copied", failure);
             }
         };
         bar.Maximum = account.Period;
@@ -93,7 +92,10 @@ internal sealed class CodeWindow : Form
         }
     }
 
-    /// <summary>Shows the code of the given time, or why the secret is not held.</summary>
+    /// <summary>
+    /// Shows the code of the given time, or why there is none: the problem of the account's vault, a code not
+    /// yet fetched, or a secret not read.
+    /// </summary>
     public void ShowCode(DateTimeOffset now)
     {
         var current = store.Code(account, now);
@@ -102,7 +104,11 @@ internal sealed class CodeWindow : Form
         error.Visible = !shown;
         if (current is null)
         {
-            error.Text = store.SecretError(account.Id) ?? "The secret is not read.";
+            error.Text = store.Problem(account) is { } problem
+                ? $"{problem.Title}{Environment.NewLine}{problem.Suggestion}"
+                : store.VaultKeyOf(account) is not null
+                    ? "The code is fetched from Vault."
+                    : store.SecretError(account.Id) ?? "The secret is not read.";
             return;
         }
         var left = account.SecondsLeft(now);

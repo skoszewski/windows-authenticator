@@ -8,23 +8,35 @@ passes. It is the Windows version of Mac Authenticator.
 
 - Windows 10 or 11, x64 or Arm64, with the .NET 10 Desktop Runtime.
 - To build: the .NET 10 SDK, on Windows, macOS or Linux.
+- To test: the `vault` binary on `PATH`, or named by `VAULT_BINARY`. The Vault tests start an
+  in-memory `vault server -dev` on 127.0.0.1, port 18200 or `VAULT_TEST_PORT`, and stop it
+  afterwards.
 
 ## Building
 
 ```sh
-dotnet test                       # run the tests of the TOTP library
+dotnet test                       # run the tests of the TOTP and Vault libraries
 dotnet build -c Release           # build the library, the app and the tests
 dotnet publish src/WindowsAuthenticator -c Release -r win-x64 --self-contained false -o dist/win-x64
 dotnet publish src/WindowsAuthenticator -c Release -r win-arm64 --self-contained false -o dist/win-arm64
 ```
 
-`dotnet test` runs the tests of the TOTP code; they run on any OS.
+`dotnet test` runs the tests of the two libraries; they run on any OS. The tests in
+`tests/Totp.Tests` compare the codes with the test vectors of RFC 6238 Appendix B and with codes
+printed by `otp.py` of linux-cloud-router, and check the reading of secrets and otpauth URIs. The
+tests in `tests/Vault.Tests` run the Vault client against a dev server they start: the sign-in
+with a token, a password and an AppRole, renewing, listing, reading, generating and importing
+keys, the policy that denies listing, a revoked token, codes that agree with the ones `Totp`
+computes for the same secret, Test Connection, the listener that receives the OIDC redirect, and
+the words a problem is said in.
 
 The projects are:
 
 - `src/Totp`: the TOTP code, base32 decoding and otpauth URI reading;
+- `src/Vault`: the client of the Vault HTTP API, the OIDC redirect listener, the connection test
+  and the problems in words;
 - `src/WindowsAuthenticator`: the Windows Forms app;
-- `tests/Totp.Tests`: the tests of `src/Totp`.
+- `tests/Totp.Tests` and `tests/Vault.Tests`: the tests of the libraries.
 
 ## The app icon
 
@@ -51,19 +63,47 @@ nothing.
 
 The menu opens with a right click on the icon:
 
+- a line `Vault <name>: <what is wrong>` for each vault whose last call failed; choosing it opens
+  Settings on that vault;
 - one submenu for each account, named after it, with:
   - **Copy Code** puts the current code in the clipboard;
   - **Show** opens the account's window: the code in two groups of digits, a bar and the
     seconds until it changes, and a **Copy** button. The window stays over the windows of other
     apps until it is closed, and clicking it does not take the focus from the app the code is
     typed into; choosing Show again brings it forward;
-  - **Remove** asks before the account and its secret are deleted, and closes its window;
-- **Add Account...** asks for a name and a secret or an otpauth URI;
-- **Add Account from QR Code in Clipboard** reads the QR code in the image in the clipboard and
-  opens the same dialog with its URI filled in;
+- **Settings...** opens the Settings window, as a double click on the icon does;
 - **Launch at Login** starts the app when you sign in to Windows;
 - **About Windows Authenticator** shows the app's version;
 - **Quit Windows Authenticator**.
+
+## Settings
+
+The Settings window has two tabs, each a list on the left with **Add...** and **Remove** under
+it, and the details of the selected item on the right. Closing the window hides it.
+
+**Accounts** lists all the accounts, whichever store keeps the secret, with the store of each:
+Credential Manager, or "Vault: " and the name of the vault. The details show the account's name,
+issuer, store and parameters, and hold **Show Window** and **Copy Code**.
+
+- **Add...** opens a menu of the ways to add an account:
+  - **Account...** asks for a name and a secret or an otpauth URI;
+  - **From QR Code in Clipboard** reads the QR code in the image in the clipboard and opens the
+    same dialog with its URI filled in;
+  - **From Vault...** asks for a vault and one of the keys of its TOTP engine, and adds the
+    account the key stores;
+  - **Generate in Vault...** has a vault make the secret of a new account, keeps it in a key and
+    adds the account;
+  - **Import to Vault...** stores the secret of an existing account in a key of a vault and adds
+    the account;
+- **Remove** asks before the selected account and its secret are deleted, and closes its window.
+
+**Vaults** lists the HashiCorp Vault servers the app is set up for, with a dot showing the state
+of each sign-in: green when signed in, yellow while signing in, red after a failure and gray when
+signed out. **Add...** opens the page of a new vault and **Remove** removes the selected one. The
+page of a vault holds its settings and sign-in, with the sign-in state, **Sign In** and **Sign
+Out**, **Test Connection**, and **Save** and **Revert** at the bottom. The methods other than
+OIDC also sign in when a code is needed; an OIDC vault is signed in here, after each start of the
+app.
 
 ## Adding an account
 
@@ -90,6 +130,118 @@ Each account is an entry of Windows Credential Manager, listed in Control Panel 
 Manager > Windows Credentials. A secret is read only when its code is shown or copied, and kept
 in memory only while its code window is open. Any program running as the same Windows user can
 read these entries.
+
+## HashiCorp Vault
+
+An account can take its codes from the TOTP secrets engine of a Vault server, which then holds
+the secret and the app never sees it. The app has any number of vaults, each a connection to one
+server with its own sign-in, and any number of keys of each. A Vault account looks and works like
+any other: it has a window and can be copied; its code is fetched from Vault once for each period
+while its window is open.
+
+### The vaults
+
+The page of a vault in Settings asks for:
+
+- the name of the vault, which must be unique;
+- the Vault address, such as `https://vault.example.com:8200`; plain `http` is allowed for any
+  address, and then the credential and the codes cross the network unencrypted;
+- the namespace, for Vault Enterprise;
+- the mount of the TOTP engine, `totp` by default;
+- the sign-in method and its mount, which is named after the method by default:
+  - **Token**: the token is kept in Credential Manager;
+  - **Username and password**: the user name is a setting and the password is kept in Credential
+    Manager;
+  - **AppRole**: the RoleID is a setting and the SecretID is kept in Credential Manager;
+  - **OIDC (browser)**: the role, and the port of the redirect listener, 8250 by default. Nothing
+    is kept in Credential Manager: Sign In opens the browser and the identity provider signs the
+    user in. The token lives in memory, so the sign-in is repeated after each start of the app and
+    when the token ends.
+
+An empty credential field keeps the credential stored before. The settings of a vault are kept in
+the registry under
+`HKEY_CURRENT_USER\Software\pl.waw.koszewscy\WindowsAuthenticator\Vaults`, one key per vault, and
+its credential is the Credential Manager entry
+`pl.waw.koszewscy.WindowsAuthenticator.vault:<id>`, named after the vault. The accounts taken
+from Vault are kept under `...\WindowsAuthenticator\VaultAccounts`, each with its vault and key,
+and hold nothing secret. Removing a vault deletes its settings, its credential and its accounts;
+the keys stay in Vault.
+
+Vaults are signed in independently, so accounts of several servers show codes at once. Two OIDC
+vaults with the same callback port cannot sign in at the same moment; give them different ports.
+
+With a token, password or AppRole the app signs in when a code is needed, and again when Vault
+refuses the token; a renewable token is renewed when half of its lease has passed. A code that
+cannot be fetched is reported in the code window in place of the code.
+
+### Adding accounts from a vault
+
+A vault stores an account in a key of its TOTP engine. **From Vault...** asks for the vault and
+lists its keys, to pick from; the key's algorithm, digits, period and issuer are read once, so the
+window can count the seconds. A key can be typed when the policy does not allow listing. The
+account is named as typed, or `<issuer>: <account name>` from the key. Removing the account does
+not touch the key in the vault.
+
+**Generate in Vault...** asks for a vault, a key name, an issuer and an account name, and has the
+vault make the secret. The vault shows the secret once, as a QR code and an `otpauth://` URL; scan
+the code into another authenticator, or copy the URL, before choosing Done. **Import to
+Vault...** asks for a vault, a key name and a base32 secret or an `otpauth://totp/` URI; Vault
+keeps SHA1, SHA256 and SHA512 keys of 6 or 8 digits, and other keys are refused. Neither replaces
+a key that exists: the name must be new. Both add the account to the app.
+
+### When a vault does not work
+
+A failure is said in words: what is wrong, what happened, and what to do about it.
+
+- While a vault's last call failed, the tray icon shows a warning sign, its tooltip names the
+  problem, and the menu starts with a line `Vault <name>: <what is wrong>`; choosing it opens
+  Settings on that vault.
+- The vault's page in Settings shows the problem under its status, with the time of the last
+  attempt and **Copy Details**, which puts the text of the problem in the clipboard without any
+  secret. A call that works clears it.
+- A Vault account whose vault has a problem shows a warning in the Accounts list and a Problem
+  section in its details, and its code window says what is wrong in place of the code.
+- **Test Connection** on the vault's page checks the settings as typed, without saving them: the
+  address, whether the server answers and is unsealed, the sign-in, and the TOTP engine. Each step
+  shows Passed, Warning, Failed or Skipped, and the first failure says what to do. An OIDC vault
+  skips the sign-in and the engine, which need the browser.
+- When a vault that worked fails, a Windows notification names it; clicking it opens Settings on
+  the vault. A vault that keeps failing notifies once, until it works again.
+- Each new problem is appended, without secrets, to
+  `%LOCALAPPDATA%\pl.waw.koszewscy\WindowsAuthenticator\vault.log`.
+
+### What the Vault administrator prepares
+
+- the TOTP engine, with the keys;
+- a policy for the user, role or token the app signs in with:
+
+  ```hcl
+  path "totp/keys"   { capabilities = ["list"] }
+  path "totp/keys/*" { capabilities = ["read"] }
+  path "totp/code/*" { capabilities = ["read"] }
+  ```
+
+  The `list` rule is optional, and the `read` rule of `totp/keys/*` is needed to add a key.
+  Generating or importing a key needs `create` and `update` on `totp/keys/*` as well;
+- for OIDC, a role of the JWT/OIDC method whose `allowed_redirect_uris` holds
+  `http://localhost:8250/oidc/callback`, with the port of the settings, and the same URI
+  registered with the identity provider.
+
+## Releasing
+
+`release.py` releases the newest entry of `CHANGELOG.md`:
+
+- `./release.py` writes the release time into the entry's heading, and commits everything with
+  the summary of the entry as the message;
+- `./release.py --push` also tags the entry's version and pushes `main` and the tag;
+- `./release.py --no-tag` makes an internal release: with `--push`, `main` is pushed without a
+  tag;
+- `./release.py -n` prints the heading and the git commands instead of making them.
+
+The commit and the date in the heading mark the entry as released, so the next change needs a new
+entry with a new version; write new entries with a plain `## x.y.z` heading. The version the app
+reports is the `Version` of `Directory.Build.props`, which is set to the version of the entry
+when the entry is written.
 
 ## License
 

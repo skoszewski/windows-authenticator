@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Totp/Totp.csproj" />
+    <ProjectReference Include="../Vault/Vault.csproj" />
   </ItemGroup>
 
 </Project>

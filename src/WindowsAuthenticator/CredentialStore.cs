@@ -21,7 +21,9 @@ internal sealed record ListedAccount(Account Account, DateTime Written);
 internal static unsafe class CredentialStore
 {
     public const string Service = "pl.waw.koszewscy.WindowsAuthenticator";
+    public const string VaultService = Service + ".vault";
     private const string ParametersKeyword = "Koszewscy_Parameters";
+    private const string VaultDescription = "Windows Authenticator Vault credential";
 
     private static string TargetName(Guid id) => $"{Service}:{id}";
 
@@ -99,18 +101,27 @@ internal static unsafe class CredentialStore
     }
 
     /// <summary>The base32 secret of the account's credential.</summary>
-    public static string Secret(Guid id)
+    public static string Secret(Guid id) =>
+        ReadBlob(TargetName(id), "read the secret") ?? throw new CredentialStoreException("read the secret", ErrorNotFound);
+
+    /// <summary>The blob of the credential as UTF-8 text, or null when there is none; the blob is cleared once copied.</summary>
+    private static string? ReadBlob(string target, string operation)
     {
-        if (!CredRead(TargetName(id), CredTypeGeneric, 0, out var credential))
+        if (!CredRead(target, CredTypeGeneric, 0, out var credential))
         {
-            throw new CredentialStoreException("read the secret", Marshal.GetLastPInvokeError());
+            var error = Marshal.GetLastPInvokeError();
+            if (error == ErrorNotFound)
+            {
+                return null;
+            }
+            throw new CredentialStoreException(operation, error);
         }
         try
         {
             var blob = new Span<byte>(credential->CredentialBlob, (int)credential->CredentialBlobSize);
-            var secret = Encoding.UTF8.GetString(blob);
+            var text = Encoding.UTF8.GetString(blob);
             blob.Clear();
-            return secret;
+            return text;
         }
         finally
         {
@@ -119,59 +130,88 @@ internal static unsafe class CredentialStore
     }
 
     /// <summary>Writes the account's credential.</summary>
-    public static void Add(NewAccount account)
+    public static void Add(NewAccount account) =>
+        Write(TargetName(account.Account.Id), account.Account.Name, account.Account.Issuer, account.Secret,
+              account.Account.Parameters, "add the account");
+
+    /// <summary>
+    /// Writes a generic credential persisted on this computer, replacing one of the same target, with the
+    /// parameters as its one attribute when given.
+    /// </summary>
+    private static void Write(string target, string userName, string? comment, string blobText, string? parameters,
+                              string operation)
     {
-        var secret = Encoding.UTF8.GetBytes(account.Secret);
-        var parameters = Encoding.Unicode.GetBytes(account.Account.Parameters);
+        var blobBytes = Encoding.UTF8.GetBytes(blobText);
+        var parameterBytes = parameters is null ? Array.Empty<byte>() : Encoding.Unicode.GetBytes(parameters);
         try
         {
-            fixed (char* target = TargetName(account.Account.Id))
-            fixed (char* userName = account.Account.Name)
-            fixed (char* comment = account.Account.Issuer)
+            fixed (char* targetName = target)
+            fixed (char* user = userName)
+            fixed (char* commentText = comment)
             fixed (char* keyword = ParametersKeyword)
-            fixed (byte* value = parameters)
-            fixed (byte* blob = secret)
+            fixed (byte* value = parameterBytes)
+            fixed (byte* blob = blobBytes)
             {
                 var attribute = new CredentialAttribute
                 {
                     Keyword = keyword,
-                    ValueSize = (uint)parameters.Length,
+                    ValueSize = (uint)parameterBytes.Length,
                     Value = value,
                 };
                 var credential = new Credential
                 {
                     Type = CredTypeGeneric,
-                    TargetName = target,
-                    Comment = comment,
-                    CredentialBlobSize = (uint)secret.Length,
+                    TargetName = targetName,
+                    Comment = commentText,
+                    CredentialBlobSize = (uint)blobBytes.Length,
                     CredentialBlob = blob,
                     Persist = CredPersistLocalMachine,
-                    AttributeCount = 1,
-                    Attributes = &attribute,
-                    UserName = userName,
+                    AttributeCount = parameters is null ? 0u : 1u,
+                    Attributes = parameters is null ? null : &attribute,
+                    UserName = user,
                 };
                 if (!CredWrite(&credential, 0))
                 {
-                    throw new CredentialStoreException("add the account", Marshal.GetLastPInvokeError());
+                    throw new CredentialStoreException(operation, Marshal.GetLastPInvokeError());
                 }
             }
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(secret);
+            CryptographicOperations.ZeroMemory(blobBytes);
         }
     }
 
     /// <summary>Deletes the account's credential; a credential already gone is no failure.</summary>
-    public static void Delete(Guid id)
+    public static void Delete(Guid id) => DeleteTarget(TargetName(id), "remove the account");
+
+    private static void DeleteTarget(string target, string operation)
     {
-        if (!CredDelete(TargetName(id), CredTypeGeneric, 0))
+        if (!CredDelete(target, CredTypeGeneric, 0))
         {
             var error = Marshal.GetLastPInvokeError();
             if (error != ErrorNotFound)
             {
-                throw new CredentialStoreException("remove the account", error);
+                throw new CredentialStoreException(operation, error);
             }
         }
     }
+
+    /// <summary>The Vault credentials are the credentials of a target prefix of their own.</summary>
+    private static string VaultTargetName(Guid profile) => $"{VaultService}:{profile}";
+
+    /// <summary>The token, password or SecretID of the Vault profile; null when none is stored.</summary>
+    public static string? VaultCredential(Guid profile)
+    {
+        var credential = ReadBlob(VaultTargetName(profile), "read the Vault credential");
+        return string.IsNullOrEmpty(credential) ? null : credential;
+    }
+
+    /// <summary>Writes the credential of the Vault profile, named after the profile.</summary>
+    public static void SetVaultCredential(Guid profile, string profileName, string credential) =>
+        Write(VaultTargetName(profile), profileName, VaultDescription, credential, null, "store the Vault credential");
+
+    /// <summary>Deletes the credential of the Vault profile; one already gone is no failure.</summary>
+    public static void DeleteVaultCredential(Guid profile) =>
+        DeleteTarget(VaultTargetName(profile), "remove the Vault credential");
 }
