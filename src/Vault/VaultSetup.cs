@@ -55,7 +55,7 @@ public static class VaultSetup
     public static VaultProblem? Problem(VaultSetupOptions options)
     {
         static VaultProblem Invalid(string detail) =>
-            new(VaultProblemKind.Other, "A setup setting is not valid", detail, "Correct it in the setup dialog.");
+            new(VaultProblemKind.Other, "A setup setting is not valid", detail, "Correct it and run the setup again.");
 
         static bool IsName(string value) =>
             value.Length > 0 && !value.Any(char.IsWhiteSpace) && value.IndexOfAny(['?', '#', '"']) < 0;
@@ -138,7 +138,7 @@ public static class VaultSetup
                 return new VaultCheck(step, VaultCheckOutcome.Failed, $"A policy named {name} exists already.",
                                       new VaultProblem(VaultProblemKind.Other, "The policy exists",
                                                        $"The vault holds a policy named {name}, and writing it would replace it.",
-                                                       "Tick Replace policies that exist, or choose another name."));
+                                                       "Allow the setup to replace existing policies, or choose another name."));
             }
             catch (VaultException error) when (error is { Kind: VaultErrorKind.Http, Status: 404 })
             {

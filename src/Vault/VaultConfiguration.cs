@@ -1,6 +1,6 @@
 namespace Vault;
 
-/// <summary>How the app signs in to Vault.</summary>
+/// <summary>How the app authenticates to Vault.</summary>
 public enum AuthMethod
 {
     Token,
@@ -9,7 +9,7 @@ public enum AuthMethod
     Oidc,
 }
 
-/// <summary>The names of the sign-in methods as Vault mounts them by default.</summary>
+/// <summary>The names of the authentication methods as Vault mounts them by default.</summary>
 public static class AuthMethodNames
 {
     /// <summary>The method's name: token, userpass, approle or oidc.</summary>

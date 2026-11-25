@@ -426,9 +426,9 @@ public sealed class VaultClient(VaultConfiguration configuration, string? token 
     }
 }
 
-/// <summary>A setting or credential the sign-in method needs and the form leaves empty.</summary>
+/// <summary>A setting or credential the authentication method needs and the form leaves empty.</summary>
 public sealed class EmptyValueException(string what) : Exception($"{what} is empty."), IVaultProblemSource
 {
     public VaultProblem Problem => new(VaultProblemKind.Credential, $"{what} is empty",
-                                       $"The sign-in needs {what.ToLowerInvariant()}.", "Enter it in the vault's settings.");
+                                       $"The authentication needs {what.ToLowerInvariant()}.", "Provide it for the vault.");
 }

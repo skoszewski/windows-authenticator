@@ -4,8 +4,8 @@ using Vault;
 namespace WindowsAuthenticator;
 
 /// <summary>
-/// The page of a vault: its settings, its sign-in and Test Connection, with Save and Revert; the session is null
-/// for a vault not yet made.
+/// The page of a vault: its settings, its authentication and Test Connection, with Save and Revert; the session
+/// is null for a vault not yet made.
 /// </summary>
 internal sealed class VaultEditor : UserControl
 {
@@ -77,7 +77,7 @@ internal sealed class VaultEditor : UserControl
         Row("Vault address", address);
         Row("Namespace", vaultNamespace);
         Row("TOTP engine mount", totpMount);
-        Heading("Sign-in");
+        Heading("Authentication");
         method.Items.AddRange([.. Methods.Select(m => m.Title)]);
         Row("Method", method);
         Row("Auth method mount", authMount);
@@ -355,22 +355,33 @@ internal sealed class VaultEditor : UserControl
         dialog.ShowDialog(FindForm());
     }
 
-    /// <summary>Shows the state of the saved vault's sign-in and its problem.</summary>
+    /// <summary>
+    /// Shows the state of the saved vault's authentication and its problem, and names the buttons, in the words of
+    /// its method: a token is checked, a password or an AppRole is logged in, and only OIDC signs in.
+    /// </summary>
     public void RefreshStatus()
     {
         if (Session is not { } current)
         {
             return;
         }
+        var (signedOut, signingIn, signedIn, start, stop) = current.Profile.Configuration.AuthMethod switch
+        {
+            AuthMethod.Token => ("Token not checked", "Checking the token...", "Token accepted", "Check Token", "Forget Token"),
+            AuthMethod.Userpass or AuthMethod.Approle => ("Not logged in", "Logging in...", "Logged in", "Log In", "Log Out"),
+            _ => ("Signed out", "Signing in...", "Signed in", "Sign In", "Sign Out"),
+        };
         (status.Text, status.ForeColor) = current.State switch
         {
             VaultState.SignedIn => (current.SignedInUntil is { } until
-                                        ? $"Signed in until {until.ToLocalTime():t}"
-                                        : "Signed in", Color.ForestGreen),
-            VaultState.SigningIn => ("Signing in...", Color.DarkGoldenrod),
+                                        ? $"{signedIn} until {until.ToLocalTime():t}"
+                                        : signedIn, Color.ForestGreen),
+            VaultState.SigningIn => (signingIn, Color.DarkGoldenrod),
             VaultState.Failed => (current.Problem?.Title ?? "Failed", Color.Firebrick),
-            _ => ("Signed out", SystemColors.GrayText),
+            _ => (signedOut, SystemColors.GrayText),
         };
+        signIn.Text = start;
+        signOut.Text = stop;
         var failed = current is { State: VaultState.Failed, Problem: not null };
         problem.Visible = lastAttempt.Visible = copyDetails.Visible = failed;
         problem.Text = failed ? $"{current.Problem!.Detail}{Environment.NewLine}{current.Problem.Suggestion}" : "";

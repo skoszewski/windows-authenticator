@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.1 - 2026-11-25 13:24:52 +0100
+
+fix: the authentication of a vault and its messages are named after what happens, and no message
+points at a control or a place.
+
+- Test Connection calls its authentication step Token, Login or Authentication, not Sign-in: a
+  token is checked and its end is given, a password or an AppRole is logged in and Vault issues a
+  token, and an OIDC vault is not tested.
+- The Address step of Test Connection shows the address as typed, not the address of the health
+  check, and the skipped steps state that they were not tested, and why.
+- The state and the buttons of a vault follow its method: Token not checked, Token accepted, Check
+  Token and Forget Token for a token; Not logged in, Logged in, Log In and Log Out for a password or
+  an AppRole; Signed out, Signed in, Sign In and Sign Out for OIDC.
+- The section of a vault's page that holds the method, the credential and the state is called
+  Authentication, not Sign-in, and the messages that apply to every method say authentication. The
+  advice after a refused token names the action of the vault's method: replace the token, log in
+  again, or sign in again.
+- The messages about a missing credential, an empty setting, a missing vault, a refused
+  Credential Manager, the callback port and an existing policy no longer name a menu path or a
+  control.
+
 ## 0.3.0 - 2026-11-25 11:13:10 +0100
 
 feature: Vault Setup enables the TOTP engine of a vault and writes the policies totp_creator and

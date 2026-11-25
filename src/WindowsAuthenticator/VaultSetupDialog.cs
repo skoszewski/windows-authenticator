@@ -63,7 +63,8 @@ internal sealed class VaultSetupDialog : FieldsDialog
             }
             catch (Exception error)
             {
-                checks = [new VaultCheck("Sign-in", VaultCheckOutcome.Failed, "The setup was not started.", VaultProblem.From(error))];
+                checks = [new VaultCheck("Authentication", VaultCheckOutcome.Failed, "The setup was not started.",
+                                         VaultProblem.From(error, configuration.AuthMethod))];
             }
             result.Text = Dialogs.FormatChecks(checks);
             RenameButtons("Run Again", "Close");

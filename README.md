@@ -24,8 +24,8 @@ dotnet publish src/WindowsAuthenticator -c Release -r win-arm64 --self-contained
 `dotnet test` runs the tests of the two libraries; they run on any OS. The tests in
 `tests/Totp.Tests` compare the codes with the test vectors of RFC 6238 Appendix B and with codes
 printed by `otp.py` of linux-cloud-router, and check the reading of secrets and otpauth URIs. The
-tests in `tests/Vault.Tests` run the Vault client against a dev server they start: the sign-in
-with a token, a password and an AppRole, renewing, listing, reading, generating and importing
+tests in `tests/Vault.Tests` run the Vault client against a dev server they start: the
+authentication with a token, a password and an AppRole, renewing, listing, reading, generating and importing
 keys, the policy that denies listing, a revoked token, codes that agree with the ones `Totp`
 computes for the same secret, Test Connection, the listener that receives the OIDC redirect, and
 the words a problem is said in.
@@ -98,12 +98,21 @@ issuer, store and parameters, and hold **Show Window** and **Copy Code**.
 - **Remove** asks before the selected account and its secret are deleted, and closes its window.
 
 **Vaults** lists the HashiCorp Vault servers the app is set up for, with a dot showing the state
-of each sign-in: green when signed in, yellow while signing in, red after a failure and gray when
-signed out. **Add...** opens the page of a new vault and **Remove** removes the selected one. The
-page of a vault holds its settings and sign-in, with the sign-in state, **Sign In** and **Sign
-Out**, **Test Connection**, and **Save** and **Revert** at the bottom. The methods other than
-OIDC also sign in when a code is needed; an OIDC vault is signed in here, after each start of the
-app.
+of each vault's authentication: green when it holds a token, yellow while it gets one, red after a
+failure and gray when it has none. **Add...** opens the page of a new vault and **Remove** removes
+the selected one. The page of a vault holds its settings and authentication, with its state, a
+start button and a stop button, **Test Connection**, and **Save** and **Revert** at the bottom.
+The words follow the method:
+
+| Method | State | Start | Stop |
+|---|---|---|---|
+| Token | Token not checked, Checking the token..., Token accepted | **Check Token** | **Forget Token** |
+| Username and password, AppRole | Not logged in, Logging in..., Logged in | **Log In** | **Log Out** |
+| OIDC | Signed out, Signing in..., Signed in | **Sign In** | **Sign Out** |
+
+The accepted, logged-in or signed-in state names the time its token ends, when it has one. A
+token, password or AppRole vault also authenticates by itself when a code is needed; an OIDC
+vault is signed in with its button after each start of the app.
 
 ## Adding an account
 
@@ -135,8 +144,8 @@ read these entries.
 
 An account can take its codes from the TOTP secrets engine of a Vault server, which then holds
 the secret and the app never sees it. The app has any number of vaults, each a connection to one
-server with its own sign-in, and any number of keys of each. A Vault account looks and works like
-any other: it has a window and can be copied; its code is fetched from Vault once for each period
+server with its own authentication, and any number of keys of each. A Vault account looks and works
+like any other: it has a window and can be copied; its code is fetched from Vault once for each period
 while its window is open.
 
 ### The vaults
@@ -148,7 +157,7 @@ The page of a vault in Settings asks for:
   address, and then the credential and the codes cross the network unencrypted;
 - the namespace, for Vault Enterprise;
 - the mount of the TOTP engine, `totp` by default;
-- the sign-in method and its mount, which is named after the method by default:
+- the authentication method and its mount, which is named after the method by default:
   - **Token**: the token is kept in Credential Manager;
   - **Username and password**: the user name is a setting and the password is kept in Credential
     Manager;
@@ -167,11 +176,11 @@ from Vault are kept under `...\WindowsAuthenticator\VaultAccounts`, each with it
 and hold nothing secret. Removing a vault deletes its settings, its credential and its accounts;
 the keys stay in Vault.
 
-Vaults are signed in independently, so accounts of several servers show codes at once. Two OIDC
+Vaults authenticate independently, so accounts of several servers show codes at once. Two OIDC
 vaults with the same callback port cannot sign in at the same moment; give them different ports.
 
-With a token, password or AppRole the app signs in when a code is needed, and again when Vault
-refuses the token; a renewable token is renewed when half of its lease has passed. A code that
+With a token, password or AppRole the app authenticates when a code is needed, and again when
+Vault refuses the token; a renewable token is renewed when half of its lease has passed. A code that
 cannot be fetched is reported in the code window in place of the code.
 
 ### Adding accounts from a vault
@@ -202,9 +211,12 @@ A failure is said in words: what is wrong, what happened, and what to do about i
 - A Vault account whose vault has a problem shows a warning in the Accounts list and a Problem
   section in its details, and its code window says what is wrong in place of the code.
 - **Test Connection** on the vault's page checks the settings as typed, without saving them: the
-  address, whether the server answers and is unsealed, the sign-in, and the TOTP engine. Each step
-  shows Passed, Warning, Failed or Skipped, and the first failure says what to do. An OIDC vault
-  skips the sign-in and the engine, which need the browser.
+  address as typed, whether the server answers and is unsealed, the authentication, and the TOTP
+  engine. The authentication step is named after what it does: **Token** checks that the token is
+  valid and says when it ends, **Login** logs in with a password or an AppRole and says that Vault
+  issued a token, and **Authentication** is not tested for an OIDC vault, which signs in
+  interactively, so the engine step is not tested either. Each step shows Passed, Warning, Failed
+  or Skipped, and the first failure says what to do.
 - When a vault that worked fails, a Windows notification names it; clicking it opens Settings on
   the vault. A vault that keeps failing notifies once, until it works again.
 - Each new problem is appended, without secrets, to
@@ -235,7 +247,7 @@ that need them, both to a user who adds accounts and shows codes.
 ### What the Vault administrator prepares
 
 - the TOTP engine, with the keys;
-- a policy for the user, role or token the app signs in with:
+- a policy for the user, role or token the app authenticates with:
 
   ```hcl
   path "totp/keys"   { capabilities = ["list"] }

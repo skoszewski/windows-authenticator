@@ -33,31 +33,36 @@ public sealed record VaultProblem(VaultProblemKind Kind, string Title, string De
     /// <summary>The problem as one text, to copy into a report.</summary>
     public string Report => $"{Title}\n{Detail}\n{Suggestion}";
 
-    /// <summary>The problem of an error of a Vault call, a listener or a layer above.</summary>
-    public static VaultProblem From(Exception error) => error switch
+    /// <summary>
+    /// The problem of an error of a Vault call, a listener or a layer above; the method of the vault, when known,
+    /// words what to do about a refused token.
+    /// </summary>
+    public static VaultProblem From(Exception error, AuthMethod? method = null) => error switch
     {
         IVaultProblemSource source => source.Problem,
-        VaultException vault => Of(vault),
+        VaultException vault => Of(vault, method),
         SocketException { SocketErrorCode: SocketError.AddressAlreadyInUse } => new(
             VaultProblemKind.Network, "The callback port is in use",
             "Another program, or another OIDC vault, listens on the callback port.",
-            "Choose another callback port in the vault's settings, and in the OIDC role's redirect URIs."),
+            "Choose another callback port for the vault, and the same port in the OIDC role's redirect URIs."),
         _ => new(VaultProblemKind.Other, "The operation failed", error.Message,
                  "Try again. If it keeps failing, copy the details into a report."),
     };
 
-    private static VaultProblem Of(VaultException error) => error.Kind switch
+    private static VaultProblem Of(VaultException error, AuthMethod? method) => error.Kind switch
     {
         VaultErrorKind.BadAddress => new(VaultProblemKind.Address, "The address is not usable",
                                          $"\"{error.Value}\" is not a Vault address.",
                                          "Use the form https://vault.example.com:8200."),
         VaultErrorKind.Http => OfStatus(error.Status,
-                                        error.Messages.Count == 0 ? "Vault gave no message." : string.Join("; ", error.Messages)),
+                                        error.Messages.Count == 0 ? "Vault gave no message." : string.Join("; ", error.Messages),
+                                        method),
         VaultErrorKind.BadResponse => new(VaultProblemKind.Response, "The answer is not from a Vault",
                                           $"The answer could not be read as {error.Value}.",
                                           "Check that the address and the port are those of the Vault API, not of a web page or a proxy."),
-        VaultErrorKind.NotSignedIn => new(VaultProblemKind.NotSignedIn, "Not signed in", "The vault has no sign-in.",
-                                          "Sign in from Settings > Vaults."),
+        VaultErrorKind.NotSignedIn => new(VaultProblemKind.NotSignedIn, "Not signed in",
+                                          "No sign-in is active, and an OIDC vault signs in interactively after each launch and when its token ends.",
+                                          "Sign in to the vault."),
         VaultErrorKind.Oidc => new(VaultProblemKind.Denied, "The browser sign-in failed", error.Value,
                                    "Sign in again; check the OIDC role and the callback port."),
         VaultErrorKind.KeyExists => new(VaultProblemKind.Other, "The key exists",
@@ -69,19 +74,28 @@ public sealed record VaultProblem(VaultProblemKind Kind, string Title, string De
                  "Try again. If it keeps failing, copy the details into a report."),
     };
 
-    private static VaultProblem OfStatus(int status, string said) => status switch
+    private static VaultProblem OfStatus(int status, string said, AuthMethod? method) => status switch
     {
         400 => new(VaultProblemKind.Server, "Vault refused the request", said,
-                   "Check the key name and the vault's settings; Vault's message says what is wrong."),
+                   "Check the key name and the vault's address, mounts and method; Vault's message says what is wrong."),
         403 => new(VaultProblemKind.Denied, "Vault denied the access", said,
-                   "The token may have ended, or its policy lacks this access. Sign in again, or ask for the policy."),
+                   $"The token may have ended, or its policy lacks this access. {Again(method)}, or ask for the policy."),
         404 => new(VaultProblemKind.Server, "Vault does not know the path", said,
-                   "Check the TOTP engine mount and the mount of the sign-in method in the vault's settings."),
+                   "Check the mount of the TOTP engine and the mount of the authentication method."),
         429 => new(VaultProblemKind.Server, "Vault is busy", said, "Wait and try again."),
         503 => new(VaultProblemKind.Server, "Vault is sealed or in standby", said,
                    "Unseal Vault, or use the address of the active node."),
         _ => new(VaultProblemKind.Server, $"Vault answered {status}", said,
-                 status >= 500 ? "The server has a problem; try again later, and look at its log." : "Check the vault's settings."),
+                 status >= 500 ? "The server has a problem; try again later, and look at its log." : "Check the vault's address, mounts and method."),
+    };
+
+    /// <summary>What to do for a new token, in the words of the method.</summary>
+    private static string Again(AuthMethod? method) => method switch
+    {
+        AuthMethod.Token => "Replace the token",
+        AuthMethod.Userpass or AuthMethod.Approle => "Log in again",
+        AuthMethod.Oidc => "Sign in again",
+        _ => "Authenticate again",
     };
 
     /// <summary>The problem of a request that got no HTTP answer from the host.</summary>

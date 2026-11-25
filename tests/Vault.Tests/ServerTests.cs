@@ -184,8 +184,46 @@ public sealed class ServerTests
     public async Task AConnectionTestPassesAgainstTheServer()
     {
         var checks = await VaultDiagnostics.RunAsync(Configuration(), VaultDevServer.RootToken);
-        CollectionAssert.AreEqual(new[] { "Address", "Server", "Sign-in", "TOTP engine" }, checks.Select(c => c.Step).ToList());
+        CollectionAssert.AreEqual(new[] { "Address", "Server", "Token", "TOTP engine" }, checks.Select(c => c.Step).ToList());
         Assert.IsTrue(checks.All(c => c.Outcome == VaultCheckOutcome.Passed));
+        Assert.AreEqual(VaultDevServer.Address, checks[0].Message);
+        Assert.AreEqual("The token is valid and has no end.", checks[2].Message);
+    }
+
+    [TestMethod]
+    public async Task AConnectionTestSaysUntilWhenATokenEnds()
+    {
+        var checks = await VaultDiagnostics.RunAsync(Configuration(), await VaultDevServer.TokenAsync("full"));
+        Assert.AreEqual("Token", checks[2].Step);
+        StringAssert.StartsWith(checks[2].Message, "The token is valid until ");
+    }
+
+    [TestMethod]
+    public async Task AConnectionTestLogsInWithAPassword()
+    {
+        var checks = await VaultDiagnostics.RunAsync(Configuration(method: AuthMethod.Userpass), VaultDevServer.Password);
+        CollectionAssert.AreEqual(new[] { "Address", "Server", "Login", "TOTP engine" }, checks.Select(c => c.Step).ToList());
+        Assert.AreEqual(VaultCheckOutcome.Passed, checks[2].Outcome);
+        Assert.AreEqual("Vault issued a token to the user alice.", checks[2].Message);
+    }
+
+    [TestMethod]
+    public async Task AConnectionTestLogsInWithAnAppRole()
+    {
+        var configuration = new VaultConfiguration(VaultDevServer.Address, authMethod: AuthMethod.Approle,
+                                                   roleId: VaultDevServer.RoleId);
+        var checks = await VaultDiagnostics.RunAsync(configuration, VaultDevServer.SecretId);
+        CollectionAssert.AreEqual(new[] { "Address", "Server", "Login", "TOTP engine" }, checks.Select(c => c.Step).ToList());
+        Assert.AreEqual("Vault issued a token to the AppRole.", checks[2].Message);
+    }
+
+    [TestMethod]
+    public async Task AConnectionTestNamesARefusedLogin()
+    {
+        var checks = await VaultDiagnostics.RunAsync(Configuration(method: AuthMethod.Userpass), "wrong");
+        Assert.AreEqual("Login", checks[^1].Step);
+        Assert.AreEqual(VaultCheckOutcome.Failed, checks[^1].Outcome);
+        Assert.AreEqual("Vault refused the login.", checks[^1].Message);
     }
 
     [TestMethod]
@@ -211,8 +249,10 @@ public sealed class ServerTests
     public async Task AConnectionTestNamesTheStepOfARefusedToken()
     {
         var checks = await VaultDiagnostics.RunAsync(Configuration(), "not-a-token");
-        Assert.AreEqual("Sign-in", checks[^1].Step);
+        Assert.AreEqual("Token", checks[^1].Step);
         Assert.AreEqual(VaultCheckOutcome.Failed, checks[^1].Outcome);
+        Assert.AreEqual("Vault did not accept the token.", checks[^1].Message);
+        StringAssert.Contains(checks[^1].Problem?.Suggestion, "Replace the token");
         Assert.AreEqual(VaultProblemKind.Denied, checks[^1].Problem?.Kind);
     }
 
@@ -220,7 +260,7 @@ public sealed class ServerTests
     public async Task AConnectionTestNamesAnEmptyCredential()
     {
         var checks = await VaultDiagnostics.RunAsync(Configuration(method: AuthMethod.Userpass), "");
-        Assert.AreEqual("Sign-in", checks[^1].Step);
+        Assert.AreEqual("Login", checks[^1].Step);
         Assert.AreEqual(VaultProblemKind.Credential, checks[^1].Problem?.Kind);
         Assert.AreEqual("The password is empty", checks[^1].Problem?.Title);
     }
@@ -243,12 +283,16 @@ public sealed class ServerTests
     }
 
     [TestMethod]
-    public async Task AConnectionTestSkipsTheSignInOfOidc()
+    public async Task AConnectionTestDoesNotTestOidc()
     {
         var checks = await VaultDiagnostics.RunAsync(Configuration(method: AuthMethod.Oidc), null);
+        CollectionAssert.AreEqual(new[] { "Address", "Server", "Authentication", "TOTP engine" },
+                                  checks.Select(c => c.Step).ToList());
         CollectionAssert.AreEqual(
             new[] { VaultCheckOutcome.Passed, VaultCheckOutcome.Passed, VaultCheckOutcome.Skipped, VaultCheckOutcome.Skipped },
             checks.Select(c => c.Outcome).ToList());
+        Assert.AreEqual("Not tested: an OIDC vault signs in interactively.", checks[2].Message);
+        Assert.AreEqual("Not tested: there is no token.", checks[3].Message);
     }
 
     [TestMethod]

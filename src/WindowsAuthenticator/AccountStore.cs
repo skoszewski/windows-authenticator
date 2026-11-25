@@ -356,7 +356,7 @@ internal sealed class AccountStore
         {
             return new VaultProblem(VaultProblemKind.Other, "The vault of this account was removed",
                                     "The account takes its codes from a vault that is not set up any more.",
-                                    "Remove the account, or add the vault again in Settings > Vaults.");
+                                    "Remove the account, or set the vault up again.");
         }
         return session.State == VaultState.Failed ? session.Problem : null;
     }

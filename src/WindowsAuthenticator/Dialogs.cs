@@ -211,7 +211,7 @@ internal static class Dialogs
     {
         if (store.Vaults.Count == 0)
         {
-            ShowError("No vault is set up", "Add a vault in Settings > Vaults first.", owner);
+            ShowError("No vault is set up", "Accounts can be taken from a vault once one is set up.", owner);
             return null;
         }
         return [.. store.Vaults];

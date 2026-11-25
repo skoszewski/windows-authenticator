@@ -4,35 +4,35 @@ using Vault;
 
 namespace WindowsAuthenticator;
 
-/// <summary>Why the session cannot sign in.</summary>
+/// <summary>Why the session cannot authenticate.</summary>
 internal sealed class SessionException(string message, VaultProblem problem) : Exception(message), IVaultProblemSource
 {
     public VaultProblem Problem { get; } = problem;
 
     public static SessionException MissingCredential() =>
-        new("No Vault credential is stored; enter it in Settings > Vaults.",
+        new("No Vault credential is stored.",
             new VaultProblem(VaultProblemKind.Credential, "No credential is stored",
                              "Credential Manager holds no token, password or SecretID for this vault.",
-                             "Enter it in Settings > Vaults and save."));
+                             "Store a credential for the vault."));
 
     public static SessionException MissingSetting(string name) =>
         new($"The Vault setting {name} is empty.",
             new VaultProblem(VaultProblemKind.Address, "A setting is empty", $"{name} is empty.",
-                             "Fill it in Settings > Vaults and save."));
+                             "Give the vault a value for it."));
 
     public static SessionException InvalidSetting(string name) =>
         new($"The Vault setting {name} is not valid.",
             new VaultProblem(VaultProblemKind.Address, "A setting is not valid", $"{name} is not valid.",
-                             "Correct it in Settings > Vaults and save."));
+                             "Give the vault a valid value for it."));
 
     /// <summary>A Credential Manager failure while the credential was read.</summary>
     public static SessionException CredentialStore(CredentialStoreException error) =>
         new(error.Message,
             new VaultProblem(VaultProblemKind.Credential, "Credential Manager refused", error.Message,
-                             "Enter the credential again in Settings > Vaults."));
+                             "Store the credential again."));
 }
 
-/// <summary>The sign-in state of a vault.</summary>
+/// <summary>The authentication state of a vault.</summary>
 internal enum VaultState
 {
     SignedOut,
@@ -104,7 +104,7 @@ internal sealed class VaultSession(VaultProfile profile)
         {
             return;
         }
-        var problem = VaultProblem.From(error);
+        var problem = VaultProblem.From(error, Configuration.AuthMethod);
         LastAttempt = DateTimeOffset.Now;
         if (State == VaultState.Failed && Problem == problem)
         {
