@@ -8,7 +8,7 @@ namespace WindowsAuthenticator;
 
 /// <summary>
 /// The dialogs of the tray menu and the Settings window: errors, About, adding, adding from a QR code, the Vault
-/// keys, and removing.
+/// keys, secrets, and removing.
 /// </summary>
 internal static class Dialogs
 {
@@ -69,12 +69,18 @@ internal static class Dialogs
         }
     }
 
+    /// <summary>
+    /// Shows the version and the build, the commit the app was built from, cut to the length git log --oneline
+    /// shows; a build outside git has the version alone.
+    /// </summary>
     public static void ShowAbout() =>
         Show(new TaskDialogPage
         {
             Caption = $"About {AppName}",
             Heading = AppName,
-            Text = $"Version {Application.ProductVersion}",
+            Text = Application.ProductVersion.Split('+', 2) is [var version, var build]
+                ? $"Version {version} ({build[..Math.Min(7, build.Length)]})"
+                : $"Version {Application.ProductVersion}",
             Icon = TaskDialogIcon.Information,
             Buttons = { TaskDialogButton.OK },
         }, null);
@@ -97,9 +103,13 @@ internal static class Dialogs
     /// <summary>Asks before deleting the account and its secret; true when it was removed.</summary>
     public static bool RemoveAccount(Account account, AccountStore store, IWin32Window? owner = null)
     {
-        var text = store.VaultKeyOf(account) is null
-            ? "Its secret is deleted from Credential Manager; the account can only be added again with the secret."
-            : "The account is removed from this app; its key stays in the vault.";
+        var text = (store.VaultProfileOf(account) is not null, account.Kind) switch
+        {
+            (true, AccountKind.Otp) => "The account is removed from this app; its key stays in the vault.",
+            (true, _) => "The account is removed from this app; its secret stays in the vault.",
+            (false, AccountKind.Otp) => "Its secret is deleted from Credential Manager; the account can only be added again with the secret.",
+            _ => "Its secret is deleted from Credential Manager and cannot be recovered from this app.",
+        };
         if (!Confirm($"Remove {account.Name}?", text, "Remove", owner))
         {
             return false;
@@ -142,6 +152,36 @@ internal static class Dialogs
     {
         using var dialog = new AddAccountDialog(store, input);
         dialog.ShowDialog(owner);
+    }
+
+    public static void AddSecret(AccountStore store, IWin32Window? owner = null)
+    {
+        using var dialog = new SecretDialog(store);
+        dialog.ShowDialog(owner);
+    }
+
+    /// <summary>Asks for a field of a vault's KV secret to read, and when writing for its value, and adds the account.</summary>
+    public static void AddVaultSecret(AccountStore store, bool writing, IWin32Window? owner = null)
+    {
+        if (Vaults(store, owner) is not { } sessions)
+        {
+            return;
+        }
+        using var dialog = new VaultSecretDialog(store, sessions, writing);
+        dialog.ShowDialog(owner);
+    }
+
+    /// <summary>Copies the secret of a secret account, telling when it could not.</summary>
+    public static async Task CopySecretAsync(AccountStore store, Account account, IWin32Window? owner = null)
+    {
+        try
+        {
+            await store.CopySecretAsync(account);
+        }
+        catch (Exception error)
+        {
+            ShowError("The secret was not copied", Describe(error), owner);
+        }
     }
 
     /// <summary>Reads an otpauth URI from a QR code in the clipboard's image and asks to add it.</summary>

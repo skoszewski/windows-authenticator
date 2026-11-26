@@ -14,6 +14,8 @@ public enum VaultErrorKind
     KeyExists,
     UnsupportedKey,
     Transport,
+    NoSecret,
+    MissingField,
 }
 
 /// <summary>What was wrong with the certificate of a refused TLS connection.</summary>
@@ -36,13 +38,16 @@ public sealed class VaultException : Exception
 
     public VaultErrorKind Kind { get; }
 
-    /// <summary>The address, the unreadable part, the message, the key name, the reason or the host of the error.</summary>
+    /// <summary>
+    /// The address, the unreadable part, the message, the key name, the reason, the host, the secret's name or the
+    /// field of the error.
+    /// </summary>
     public string Value { get; }
 
     /// <summary>The HTTP status of an <see cref="VaultErrorKind.Http"/> error.</summary>
     public int Status { get; }
 
-    /// <summary>Vault's messages of an <see cref="VaultErrorKind.Http"/> error.</summary>
+    /// <summary>Vault's messages of an <see cref="VaultErrorKind.Http"/> error, or the secret of a missing field.</summary>
     public IReadOnlyList<string> Messages { get; }
 
     /// <summary>The certificate's errors of a <see cref="VaultErrorKind.Transport"/> error refused in the TLS handshake.</summary>
@@ -73,6 +78,13 @@ public sealed class VaultException : Exception
 
     public static VaultException UnsupportedKey(string reason) =>
         new(VaultErrorKind.UnsupportedKey, $"Vault cannot keep this key: {reason}", reason);
+
+    public static VaultException NoSecret(string name) =>
+        new(VaultErrorKind.NoSecret, $"Vault holds no secret named {name}.", name);
+
+    /// <summary>A secret without the field; the value is the field, the messages hold the secret's name.</summary>
+    public static VaultException MissingField(string field, string secret) =>
+        new(VaultErrorKind.MissingField, $"The secret {secret} has no field named {field}.", field, messages: [secret]);
 
     /// <summary>A request that got no HTTP answer from the host, with the failure of the connection.</summary>
     public static VaultException Transport(string host, Exception inner, CertificateErrors? certificate = null) =>

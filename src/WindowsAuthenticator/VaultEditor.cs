@@ -316,7 +316,10 @@ internal sealed class VaultEditor : UserControl
             var configuration = Configuration();
             var typed = credential.Text;
             var used = typed.Length > 0 || Session is null ? typed : CredentialStore.VaultCredential(Session.Profile.Id);
-            results = await VaultDiagnostics.RunAsync(configuration, used);
+            // The token of the vault's sign-in goes to the address of the vault alone.
+            var saved = Session?.Profile.Configuration;
+            var sameServer = saved is not null && saved.Address == configuration.Address && saved.Namespace == configuration.Namespace;
+            results = await VaultDiagnostics.RunAsync(configuration, used, sameServer ? Session?.Token : null);
         }
         catch (Exception error) when (error is SessionException || AccountStore.IsStorageFailure(error))
         {

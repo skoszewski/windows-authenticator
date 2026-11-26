@@ -296,6 +296,27 @@ public sealed class ServerTests
     }
 
     [TestMethod]
+    public async Task AConnectionTestChecksTheTokenOfAnOidcSignIn()
+    {
+        var token = new VaultToken(VaultDevServer.RootToken, null, false);
+        var checks = await VaultDiagnostics.RunAsync(Configuration(method: AuthMethod.Oidc), null, token);
+        CollectionAssert.AreEqual(new[] { "Address", "Server", "Token", "TOTP engine" }, checks.Select(c => c.Step).ToList());
+        Assert.AreEqual(VaultCheckOutcome.Passed, checks[2].Outcome);
+        Assert.AreNotEqual(VaultCheckOutcome.Skipped, checks[3].Outcome);
+    }
+
+    [TestMethod]
+    public async Task AConnectionTestNamesTheStepOfARefusedOidcToken()
+    {
+        var token = new VaultToken("not-a-token", null, false);
+        var checks = await VaultDiagnostics.RunAsync(Configuration(method: AuthMethod.Oidc), null, token);
+        Assert.AreEqual("Token", checks[^1].Step);
+        Assert.AreEqual(VaultCheckOutcome.Failed, checks[^1].Outcome);
+        Assert.AreEqual("Vault did not accept the token.", checks[^1].Message);
+        Assert.AreEqual(VaultProblemKind.Denied, checks[^1].Problem?.Kind);
+    }
+
+    [TestMethod]
     public async Task AConnectionTestWarnsOfPlainHttpToAnotherHost()
     {
         var checks = await VaultDiagnostics.RunAsync(Configuration("http://vault.invalid:1"), VaultDevServer.RootToken);

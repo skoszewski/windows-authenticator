@@ -4,12 +4,13 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Totp;
 
 namespace Vault;
 
 /// <summary>The calls of the Vault HTTP API that the app makes.</summary>
-public sealed class VaultClient(VaultConfiguration configuration, string? token = null)
+public sealed partial class VaultClient(VaultConfiguration configuration, string? token = null)
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
     private static readonly HttpMethod ListMethod = new("LIST");
@@ -66,10 +67,15 @@ public sealed class VaultClient(VaultConfiguration configuration, string? token 
         }
     }
 
-    /// <summary>The request for <paramref name="path"/> below <c>/v1/</c>, with the token and namespace headers.</summary>
+    /// <summary>
+    /// The request for <paramref name="path"/> below <c>/v1/</c>, with the token and namespace headers; the body
+    /// is the string pairs, or the JSON node as it is, since its names, such as the fields of a secret, are the
+    /// user's.
+    /// </summary>
     internal HttpRequestMessage MakeRequest(HttpMethod method, string path,
                                             IReadOnlyList<KeyValuePair<string, string>>? query = null,
-                                            IReadOnlyDictionary<string, string>? body = null)
+                                            IReadOnlyDictionary<string, string>? body = null, JsonNode? json = null,
+                                            string contentType = "application/json")
     {
         if (!Uri.TryCreate(Configuration.Address.Trim(), UriKind.Absolute, out var address)
             || address.Scheme is not ("http" or "https")
@@ -92,10 +98,10 @@ public sealed class VaultClient(VaultConfiguration configuration, string? token 
         {
             request.Headers.TryAddWithoutValidation("X-Vault-Namespace", Configuration.Namespace);
         }
-        if (body is not null)
+        if (json is not null || body is not null)
         {
-            request.Content = new StringContent(JsonSerializer.Serialize(body, Json), Encoding.UTF8,
-                                                new MediaTypeHeaderValue("application/json"));
+            request.Content = new StringContent(json?.ToJsonString() ?? JsonSerializer.Serialize(body, Json), Encoding.UTF8,
+                                                new MediaTypeHeaderValue(contentType));
         }
         return request;
     }
@@ -133,9 +139,10 @@ public sealed class VaultClient(VaultConfiguration configuration, string? token 
     /// </summary>
     internal async Task<byte[]> SendAsync(HttpMethod method, string path,
                                          IReadOnlyList<KeyValuePair<string, string>>? query = null,
-                                         IReadOnlyDictionary<string, string>? body = null)
+                                         IReadOnlyDictionary<string, string>? body = null, JsonNode? json = null,
+                                         string contentType = "application/json")
     {
-        using var request = MakeRequest(method, path, query, body);
+        using var request = MakeRequest(method, path, query, body, json, contentType);
         using var response = await TransmitAsync(request).ConfigureAwait(false);
         var data = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -233,7 +240,7 @@ public sealed class VaultClient(VaultConfiguration configuration, string? token 
     }
 
     /// <summary>The name with each part between slashes percent-encoded, for a path.</summary>
-    private static string Escaped(string name) => string.Join('/', name.Split('/').Select(Uri.EscapeDataString));
+    internal static string Escaped(string name) => string.Join('/', name.Split('/').Select(Uri.EscapeDataString));
 
     private string AuthPath(string suffix) => $"auth/{Configuration.AuthMount.Trim('/')}/{suffix}";
 

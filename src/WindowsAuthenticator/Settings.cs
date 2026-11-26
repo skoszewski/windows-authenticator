@@ -7,9 +7,13 @@ namespace WindowsAuthenticator;
 /// <summary>A named Vault connection; its credential is a Credential Manager entry named after it.</summary>
 internal sealed record VaultProfile(Guid Id, string Name, VaultConfiguration Configuration);
 
-/// <summary>An account whose codes Vault makes: the account's parameters, its profile and the name of its key.</summary>
+/// <summary>
+/// An account kept in Vault: for an OTP account the parameters, the profile and the name of the key Vault makes
+/// its codes from; for a secret account the profile and the reference of the KV field, with the parameters and
+/// the key empty. Records written before secret accounts have no reference.
+/// </summary>
 internal sealed record VaultRecord(Guid Id, Guid Profile, string Name, string? Issuer, string Parameters, string Key,
-                                   DateTime Added);
+                                   DateTime Added, SecretReference? Reference = null);
 
 /// <summary>
 /// The app's settings in the current user's registry: the menu order of the accounts, the Vault profiles and
@@ -136,8 +140,20 @@ internal static class Settings
         {
             using (key)
             {
-                if (Guid.TryParse(Text(key, "Profile"), out var profile) && Text(key, "Name") is { } name
-                    && Text(key, "Parameters") is { } parameters && Text(key, "Key") is { } vaultKey)
+                if (!Guid.TryParse(Text(key, "Profile"), out var profile) || Text(key, "Name") is not { } name)
+                {
+                    continue;
+                }
+                if (Text(key, "Kind") == "secret")
+                {
+                    if (Enum.TryParse<KvVersion>(Text(key, "KvVersion"), out var version) && Text(key, "KvMount") is { } mount
+                        && Text(key, "KvName") is { } secret && Text(key, "KvField") is { } field)
+                    {
+                        records.Add(new VaultRecord(id, profile, name, null, "", "", Time(key, "Added"),
+                                                    new SecretReference(version, mount, secret, field)));
+                    }
+                }
+                else if (Text(key, "Parameters") is { } parameters && Text(key, "Key") is { } vaultKey)
                 {
                     records.Add(new VaultRecord(id, profile, name, Text(key, "Issuer"), parameters, vaultKey,
                                                 Time(key, "Added")));
@@ -156,6 +172,11 @@ internal static class Settings
         SetText(key, "Parameters", record.Parameters);
         SetText(key, "Key", record.Key);
         SetText(key, "Added", record.Added.ToString("O", CultureInfo.InvariantCulture));
+        SetText(key, "Kind", record.Reference is null ? null : "secret");
+        SetText(key, "KvVersion", record.Reference?.Version.ToString());
+        SetText(key, "KvMount", record.Reference?.Mount);
+        SetText(key, "KvName", record.Reference?.Name);
+        SetText(key, "KvField", record.Reference?.Field);
     }
 
     public static void DeleteVaultAccount(Guid id)

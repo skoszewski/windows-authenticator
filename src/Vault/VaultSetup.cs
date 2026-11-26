@@ -1,15 +1,37 @@
+using System.Globalization;
+using System.Text.Json.Nodes;
+
 namespace Vault;
 
-/// <summary>What the setup of a vault is asked to do.</summary>
-/// <param name="OverwritePolicies">Replace policies of these names that exist; otherwise the setup stops at one.</param>
+/// <summary>What the setup of a KV engine for secrets is asked to do.</summary>
 /// <param name="EngineExists">The engine is enabled already, so only the policies are written.</param>
+public sealed record KvSetupOptions(KvVersion Version, string Mount, string Description, string CreatorPolicy,
+                                    string UserPolicy, bool EngineExists = false)
+{
+    /// <summary>The engine of the version at its usual mount, <c>secret</c> for KV v2 and <c>kv</c> for KV v1.</summary>
+    public static KvSetupOptions Default(KvVersion version) => version == KvVersion.V2
+        ? new(version, "secret", "KV v2 secrets engine", "kv_creator", "kv_user")
+        : new(version, "kv", "KV v1 secrets engine", "kv1_creator", "kv1_user");
+}
+
+/// <summary>
+/// What the setup of a vault is asked to do: the TOTP engine and its policies, a KV v2 engine and a KV v1 engine,
+/// each with its policies, any of them or all.
+/// </summary>
+/// <param name="OverwritePolicies">Replace policies of these names that exist; otherwise the setup stops at one.</param>
+/// <param name="EngineExists">The TOTP engine is enabled already, so only its policies are written.</param>
+/// <param name="Totp">Set up the TOTP engine.</param>
+/// <param name="Kv">The KV v2 engine to set up, or null for none.</param>
+/// <param name="Kv1">The KV v1 engine to set up, or null for none.</param>
 public sealed record VaultSetupOptions(string Mount = "totp", string Description = "TOTP secrets engine",
                                        string CreatorPolicy = "totp_creator", string UserPolicy = "totp_user",
-                                       bool OverwritePolicies = false, bool EngineExists = false);
+                                       bool OverwritePolicies = false, bool EngineExists = false, bool Totp = true,
+                                       KvSetupOptions? Kv = null, KvSetupOptions? Kv1 = null);
 
 /// <summary>
 /// Prepares a vault for the app: enables the TOTP secrets engine and writes the policies that let users create
-/// keys and read codes. It assigns no policy to anyone.
+/// keys and read codes, and enables KV secrets engines and writes the policies that let users write and read
+/// secrets. It assigns no policy to anyone.
 /// </summary>
 public static class VaultSetup
 {
@@ -51,6 +73,54 @@ public static class VaultSetup
             """.ReplaceLineEndings("\n");
     }
 
+    /// <summary>The policy that lets a user list, create, update and read the secrets of a KV engine.</summary>
+    public static string KvCreatorPolicy(string mount, KvVersion version = KvVersion.V2)
+    {
+        var path = Trimmed(mount);
+        var text = version == KvVersion.V1
+            ? $$"""
+                path "{{path}}/*" {
+                  capabilities = ["list", "create", "update", "read"]
+                }
+
+                """
+            : $$"""
+                path "{{path}}/metadata" {
+                  capabilities = ["list"]
+                }
+
+                path "{{path}}/data/*" {
+                  capabilities = ["create", "update", "patch", "read"]
+                }
+
+                """;
+        return text.ReplaceLineEndings("\n");
+    }
+
+    /// <summary>The policy that lets a user list and read the secrets of a KV engine.</summary>
+    public static string KvUserPolicy(string mount, KvVersion version = KvVersion.V2)
+    {
+        var path = Trimmed(mount);
+        var text = version == KvVersion.V1
+            ? $$"""
+                path "{{path}}/*" {
+                  capabilities = ["list", "read"]
+                }
+
+                """
+            : $$"""
+                path "{{path}}/metadata" {
+                  capabilities = ["list"]
+                }
+
+                path "{{path}}/data/*" {
+                  capabilities = ["read"]
+                }
+
+                """;
+        return text.ReplaceLineEndings("\n");
+    }
+
     /// <summary>Why the options cannot be used, or null.</summary>
     public static VaultProblem? Problem(VaultSetupOptions options)
     {
@@ -60,17 +130,37 @@ public static class VaultSetup
         static bool IsName(string value) =>
             value.Length > 0 && !value.Any(char.IsWhiteSpace) && value.IndexOfAny(['?', '#', '"']) < 0;
 
-        if (!IsName(Trimmed(options.Mount)))
+        if (!options.Totp && options.Kv is null && options.Kv1 is null)
         {
-            return Invalid("The mount is empty or holds spaces or other characters a path cannot hold.");
+            return Invalid("Nothing is chosen to set up.");
         }
-        if (!IsName(options.CreatorPolicy) || !IsName(options.UserPolicy))
+        var mounts = new List<string>();
+        var policies = new List<string>();
+        if (options.Totp)
+        {
+            mounts.Add(Trimmed(options.Mount));
+            policies.AddRange([options.CreatorPolicy, options.UserPolicy]);
+        }
+        foreach (var kv in new[] { options.Kv, options.Kv1 }.OfType<KvSetupOptions>())
+        {
+            mounts.Add(Trimmed(kv.Mount));
+            policies.AddRange([kv.CreatorPolicy, kv.UserPolicy]);
+        }
+        if (!mounts.All(IsName))
+        {
+            return Invalid("A mount is empty or holds spaces or other characters a path cannot hold.");
+        }
+        if (!policies.All(IsName))
         {
             return Invalid("A policy name is empty or holds spaces or other characters a name cannot hold.");
         }
-        if (options.CreatorPolicy == options.UserPolicy)
+        if (mounts.Distinct().Count() != mounts.Count)
         {
-            return Invalid("The two policies need different names.");
+            return Invalid("The engines need different mounts.");
+        }
+        if (policies.Distinct().Count() != policies.Count)
+        {
+            return Invalid("The policies need different names.");
         }
         return null;
     }
@@ -85,42 +175,66 @@ public static class VaultSetup
         {
             return [new VaultCheck("Settings", VaultCheckOutcome.Failed, "The setup was not started.", problem)];
         }
+        // The parts in order: the TOTP engine, then KV v2, then KV v1, each an engine and its two policies.
+        var parts = new List<(string Step, string Label, string Mount, JsonObject Body, bool Exists,
+                              (string Step, string Name, string Text)[] Policies)>();
+        if (options.Totp)
+        {
+            var mount = Trimmed(options.Mount);
+            parts.Add(("Engine", "TOTP", mount, new JsonObject { ["type"] = "totp", ["description"] = options.Description },
+                       options.EngineExists,
+                       [("Creator policy", options.CreatorPolicy, CreatorPolicy(mount)),
+                        ("User policy", options.UserPolicy, UserPolicy(mount))]));
+        }
+        foreach (var kv in new[] { options.Kv, options.Kv1 }.OfType<KvSetupOptions>())
+        {
+            var mount = Trimmed(kv.Mount);
+            var label = $"KV v{(int)kv.Version}";
+            parts.Add(($"{label} engine", label, mount,
+                       new JsonObject
+                       {
+                           ["type"] = "kv",
+                           ["description"] = kv.Description,
+                           ["options"] = new JsonObject { ["version"] = ((int)kv.Version).ToString(CultureInfo.InvariantCulture) },
+                       },
+                       kv.EngineExists,
+                       [($"{label} creator policy", kv.CreatorPolicy, KvCreatorPolicy(mount, kv.Version)),
+                        ($"{label} user policy", kv.UserPolicy, KvUserPolicy(mount, kv.Version))]));
+        }
+
         var checks = new List<VaultCheck>();
-        var mount = Trimmed(options.Mount);
-
-        // Enable the engine
-        if (options.EngineExists)
+        foreach (var part in parts)
         {
-            checks.Add(new VaultCheck("Engine", VaultCheckOutcome.Skipped, $"The engine is taken as enabled at {mount}.", null));
-        }
-        else
-        {
-            try
+            // Enable the engine
+            if (part.Exists)
             {
-                await client.SendAsync(HttpMethod.Post, $"sys/mounts/{mount}",
-                                       body: new Dictionary<string, string> { ["type"] = "totp", ["description"] = options.Description })
-                    .ConfigureAwait(false);
-                checks.Add(new VaultCheck("Engine", VaultCheckOutcome.Passed, $"The TOTP engine is enabled at {mount}.", null));
+                checks.Add(new VaultCheck(part.Step, VaultCheckOutcome.Skipped,
+                                          $"The {part.Label} engine is taken as enabled at {part.Mount}.", null));
             }
-            catch (VaultException error)
+            else
             {
-                checks.Add(new VaultCheck("Engine", VaultCheckOutcome.Failed, "The engine was not enabled.",
-                                          VaultProblem.From(error)));
-                return checks;
+                try
+                {
+                    await client.SendAsync(HttpMethod.Post, $"sys/mounts/{part.Mount}", json: part.Body).ConfigureAwait(false);
+                    checks.Add(new VaultCheck(part.Step, VaultCheckOutcome.Passed,
+                                              $"The {part.Label} engine is enabled at {part.Mount}.", null));
+                }
+                catch (VaultException error)
+                {
+                    checks.Add(new VaultCheck(part.Step, VaultCheckOutcome.Failed, "The engine was not enabled.",
+                                              VaultProblem.From(error)));
+                    return checks;
+                }
             }
-        }
 
-        foreach (var (step, name, text) in new[]
-                 {
-                     ("Creator policy", options.CreatorPolicy, CreatorPolicy(mount)),
-                     ("User policy", options.UserPolicy, UserPolicy(mount)),
-                 })
-        {
-            var check = await WritePolicyAsync(step, name, text, client, options.OverwritePolicies).ConfigureAwait(false);
-            checks.Add(check);
-            if (check.Outcome == VaultCheckOutcome.Failed)
+            foreach (var (step, name, text) in part.Policies)
             {
-                break;
+                var check = await WritePolicyAsync(step, name, text, client, options.OverwritePolicies).ConfigureAwait(false);
+                checks.Add(check);
+                if (check.Outcome == VaultCheckOutcome.Failed)
+                {
+                    return checks;
+                }
             }
         }
         return checks;

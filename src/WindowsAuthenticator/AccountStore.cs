@@ -1,4 +1,5 @@
 using System.Security;
+using System.Text;
 using Totp;
 using Vault;
 
@@ -10,12 +11,16 @@ internal sealed class StoreException(string message) : Exception(message);
 /// <summary>The profile and the name of the key an account whose codes Vault makes is read from.</summary>
 internal sealed record VaultKey(Guid Profile, string Key);
 
+/// <summary>The profile and the reference of the KV secret field a secret account is read from.</summary>
+internal sealed record VaultSecret(Guid Profile, SecretReference Reference);
+
 /// <summary>A vault that needs the user's attention, and why.</summary>
 internal sealed record VaultIssue(VaultSession Session, VaultProblem Problem);
 
 /// <summary>
-/// The registered accounts, kept in Credential Manager or taken from a vault, the Vault sessions, and the
-/// secrets and Vault codes of the accounts whose codes are shown.
+/// The registered accounts, OTP and secret accounts kept in Credential Manager or taken from a vault, the Vault
+/// sessions, and the secrets and Vault codes of the OTP accounts whose codes are shown. A secret account is never
+/// shown; its secret is read when it is revealed or copied, and kept nowhere.
 /// </summary>
 internal sealed class AccountStore
 {
@@ -24,6 +29,7 @@ internal sealed class AccountStore
     private readonly Dictionary<Guid, string> secretErrors = [];
     private readonly HashSet<Guid> openWindowIds = [];
     private readonly Dictionary<Guid, VaultKey> vaultKeys = [];
+    private readonly Dictionary<Guid, VaultSecret> vaultSecrets = [];
 
     /// <summary>The codes fetched from Vault, with the period count each is valid for.</summary>
     private readonly Dictionary<Guid, (string Code, long Counter)> vaultCodes = [];
@@ -83,9 +89,17 @@ internal sealed class AccountStore
             }).ToList();
             vaultRecords = Settings.VaultAccounts();
             vaultKeys.Clear();
+            vaultSecrets.Clear();
             var listed = CredentialStore.Accounts();
+            listed.AddRange(CredentialStore.SecretAccounts());
             foreach (var record in vaultRecords)
             {
+                if (record.Reference is { } reference)
+                {
+                    listed.Add(new ListedAccount(Account.Secret(record.Id, record.Name), record.Added));
+                    vaultSecrets[record.Id] = new VaultSecret(record.Profile, reference);
+                    continue;
+                }
                 try
                 {
                     var account = Account.FromParameters(record.Id, record.Name, record.Issuer, record.Parameters);
@@ -137,15 +151,65 @@ internal sealed class AccountStore
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>Adds a secret account whose secret is kept in Credential Manager.</summary>
+    public void AddSecret(string name, string value)
+    {
+        name = name.Trim();
+        if (name.Length == 0)
+        {
+            throw new StoreException("Give the account a name.");
+        }
+        if (value.Length == 0)
+        {
+            throw new StoreException("The secret is empty.");
+        }
+        if (Encoding.UTF8.GetByteCount(value) > CredentialStore.MaxBlobSize)
+        {
+            throw new StoreException($"The secret is longer than Credential Manager keeps, {CredentialStore.MaxBlobSize} bytes.");
+        }
+        CheckCanAdd(name);
+        var account = Account.Secret(Guid.NewGuid(), name);
+        CredentialStore.AddSecret(account.Id, name, value);
+        Accounts = [.. Accounts, account];
+        SaveOrder();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Adds a secret account read from a field of a KV secret of the Vault profile; nothing secret is kept for it.</summary>
+    public void AddVaultSecret(string name, SecretReference reference, Guid profile)
+    {
+        name = name.Trim();
+        if (name.Length == 0)
+        {
+            throw new StoreException("Give the account a name.");
+        }
+        CheckCanAdd(name);
+        var account = Account.Secret(Guid.NewGuid(), name);
+        var record = new VaultRecord(account.Id, profile, name, null, "", "", DateTime.UtcNow, reference);
+        Settings.SaveVaultAccount(record);
+        vaultRecords.Add(record);
+        vaultSecrets[account.Id] = new VaultSecret(profile, reference);
+        Accounts = [.. Accounts, account];
+        SaveOrder();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
     /// <summary>The Vault key of an account whose codes Vault makes; null for an account of Credential Manager.</summary>
     public VaultKey? VaultKeyOf(Account account) => vaultKeys.GetValueOrDefault(account.Id);
+
+    /// <summary>The KV field of a secret account kept in Vault; null for any other account.</summary>
+    public VaultSecret? VaultSecretOf(Account account) => vaultSecrets.GetValueOrDefault(account.Id);
+
+    /// <summary>The Vault profile an account is kept in: the one that makes its codes or holds its secret.</summary>
+    public Guid? VaultProfileOf(Account account) =>
+        vaultKeys.GetValueOrDefault(account.Id)?.Profile ?? vaultSecrets.GetValueOrDefault(account.Id)?.Profile;
 
     /// <summary>The session of the Vault profile, or null when it is gone.</summary>
     public VaultSession? Vault(Guid profile) => vaults.FirstOrDefault(s => s.Profile.Id == profile);
 
-    /// <summary>Where the account's secret is kept: Credential Manager, or the vault that makes its codes.</summary>
-    public string Source(Account account) => VaultKeyOf(account) is { } key
-        ? $"Vault: {Vault(key.Profile)?.Profile.Name ?? "removed"}"
+    /// <summary>Where the account's secret is kept: Credential Manager, or the vault that makes its codes or holds it.</summary>
+    public string Source(Account account) => VaultProfileOf(account) is { } profile
+        ? $"Vault: {Vault(profile)?.Profile.Name ?? "removed"}"
         : "Credential Manager";
 
     /// <summary>Refuses an empty name, and one another profile has.</summary>
@@ -199,9 +263,8 @@ internal sealed class AccountStore
         Reload();
     }
 
-    /// <summary>The accounts whose codes the Vault profile makes.</summary>
-    public IReadOnlyList<Account> AccountsOf(Guid profile) =>
-        Accounts.Where(a => vaultKeys.TryGetValue(a.Id, out var key) && key.Profile == profile).ToList();
+    /// <summary>The accounts kept in the Vault profile: those whose codes it makes and those whose secret it holds.</summary>
+    public IReadOnlyList<Account> AccountsOf(Guid profile) => Accounts.Where(a => VaultProfileOf(a) == profile).ToList();
 
     /// <summary>Deletes the profile, its credential and its accounts; their keys stay in Vault.</summary>
     public void RemoveVaultProfile(VaultSession session)
@@ -229,15 +292,21 @@ internal sealed class AccountStore
         }
     }
 
-    /// <summary>Deletes the account's credential, and with it its secret; a Vault account's key stays in Vault.</summary>
+    /// <summary>
+    /// Deletes the account's credential, and with it its secret; a Vault account's key or secret stays in Vault.
+    /// </summary>
     public void Remove(Account account)
     {
         EnsureLoaded();
-        if (vaultKeys.Remove(account.Id))
+        if (vaultKeys.Remove(account.Id) || vaultSecrets.Remove(account.Id))
         {
             Settings.DeleteVaultAccount(account.Id);
             vaultRecords.RemoveAll(r => r.Id == account.Id);
             vaultCodes.Remove(account.Id);
+        }
+        else if (account.Kind == AccountKind.Secret)
+        {
+            CredentialStore.DeleteSecret(account.Id);
         }
         else
         {
@@ -304,6 +373,23 @@ internal sealed class AccountStore
         Clipboard.SetText(code);
     }
 
+    /// <summary>The text of a secret account, read from its credential or from its field in Vault; nothing is kept of it.</summary>
+    public async Task<string> SecretValueAsync(Account account)
+    {
+        if (!vaultSecrets.TryGetValue(account.Id, out var vaultSecret))
+        {
+            return CredentialStore.SecretValue(account.Id);
+        }
+        var session = Vault(vaultSecret.Profile) ?? throw new StoreException("The vault of this account was removed.");
+        return await session.AuthorizedAsync(client => client.ReadSecretAsync(vaultSecret.Reference));
+    }
+
+    /// <summary>
+    /// Puts the text of a secret account in the clipboard, kept out of the clipboard history, and empties the
+    /// clipboard after 30 seconds if it still holds that copy.
+    /// </summary>
+    public async Task CopySecretAsync(Account account) => await ConcealedClipboard.CopyAsync(await SecretValueAsync(account));
+
     /// <summary>Fetches the codes of the shown Vault accounts that have none for the present period.</summary>
     public void Tick(DateTimeOffset now)
     {
@@ -345,14 +431,14 @@ internal sealed class AccountStore
     public IReadOnlyList<VaultIssue> Problems =>
         vaults.Where(s => s is { State: VaultState.Failed, Problem: not null }).Select(s => new VaultIssue(s, s.Problem!)).ToList();
 
-    /// <summary>Why a Vault account has no code: its vault failed, or is gone.</summary>
+    /// <summary>Why a Vault account has no code or secret: its vault failed, or is gone.</summary>
     public VaultProblem? Problem(Account account)
     {
-        if (!vaultKeys.TryGetValue(account.Id, out var vaultKey))
+        if (VaultProfileOf(account) is not { } profile)
         {
             return null;
         }
-        if (Vault(vaultKey.Profile) is not { } session)
+        if (Vault(profile) is not { } session)
         {
             return new VaultProblem(VaultProblemKind.Other, "The vault of this account was removed",
                                     "The account takes its codes from a vault that is not set up any more.",
@@ -402,7 +488,7 @@ internal sealed class AccountStore
     /// </summary>
     private void UpdateSecrets()
     {
-        var shown = openWindowIds.Where(id => Accounts.Any(a => a.Id == id)).ToHashSet();
+        var shown = openWindowIds.Where(id => Accounts.Any(a => a.Id == id && a.Kind == AccountKind.Otp)).ToHashSet();
         foreach (var id in secrets.Keys.Where(id => !shown.Contains(id)).ToList())
         {
             secrets.Remove(id);

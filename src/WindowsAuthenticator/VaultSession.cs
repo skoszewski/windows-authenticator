@@ -48,16 +48,48 @@ internal enum VaultState
 
 /// <summary>
 /// A Vault connection: a named profile, kept in the registry with its credential in Credential Manager, and the
-/// token of the current sign-in, kept in memory alone. It runs on the UI thread.
+/// current token, which for OIDC is also kept in Credential Manager. It runs on the UI thread.
 /// </summary>
-internal sealed class VaultSession(VaultProfile profile)
+internal sealed class VaultSession
 {
     private bool worked;
     private VaultToken? token;
     private Task? signIn;
     private OidcSignInWindow? signInWindow;
 
-    public VaultProfile Profile { get; private set; } = profile;
+    /// <summary>The session of the profile; an OIDC profile takes up the token kept for it, unless it has ended.</summary>
+    public VaultSession(VaultProfile profile)
+    {
+        Profile = profile;
+        if (profile.Configuration.AuthMethod != AuthMethod.Oidc)
+        {
+            return;
+        }
+        VaultToken? kept;
+        try
+        {
+            kept = CredentialStore.VaultToken(profile.Id);
+        }
+        catch (CredentialStoreException error)
+        {
+            ProblemLog.Write(profile.Name, SessionException.CredentialStore(error).Problem);
+            return;
+        }
+        if (kept is { Expires: { } expires } && expires - DateTimeOffset.Now <= TimeSpan.FromSeconds(5))
+        {
+            Keep(null);
+        }
+        else if (kept is not null)
+        {
+            token = kept;
+            State = VaultState.SignedIn;
+        }
+    }
+
+    public VaultProfile Profile { get; private set; }
+
+    /// <summary>The current token, or null when the vault holds none.</summary>
+    public VaultToken? Token => token;
 
     public VaultState State { get; private set; } = VaultState.SignedOut;
 
@@ -82,13 +114,41 @@ internal sealed class VaultSession(VaultProfile profile)
         SignOut();
     }
 
-    /// <summary>Drops the token and closes a sign-in window that is open.</summary>
+    /// <summary>Drops the token, and the one kept in Credential Manager, and closes a sign-in window that is open.</summary>
     public void SignOut()
     {
         signInWindow?.Cancel();
-        token = null;
+        Keep(null);
         worked = false;
         SetState(VaultState.SignedOut);
+    }
+
+    /// <summary>
+    /// Makes the token the current one, or none; an OIDC token is kept in Credential Manager, and a token dropped
+    /// is forgotten there. A Credential Manager that refuses is logged, and the token still works.
+    /// </summary>
+    private void Keep(VaultToken? value)
+    {
+        token = value;
+        if (value is not null && Configuration.AuthMethod != AuthMethod.Oidc)
+        {
+            return;
+        }
+        try
+        {
+            if (value is null)
+            {
+                CredentialStore.DeleteVaultToken(Profile.Id);
+            }
+            else
+            {
+                CredentialStore.SetVaultToken(Profile.Id, Profile.Name, value);
+            }
+        }
+        catch (CredentialStoreException error)
+        {
+            ProblemLog.Write(Profile.Name, SessionException.CredentialStore(error).Problem);
+        }
     }
 
     private void SetState(VaultState state, VaultProblem? problem = null)
@@ -160,7 +220,7 @@ internal sealed class VaultSession(VaultProfile profile)
         SetState(VaultState.SigningIn);
         try
         {
-            token = await LoginAsync();
+            Keep(await LoginAsync());
             Succeeded();
         }
         catch (OperationCanceledException)
@@ -246,13 +306,13 @@ internal sealed class VaultSession(VaultProfile profile)
             var left = expires - DateTimeOffset.Now;
             if (left <= TimeSpan.FromSeconds(5))
             {
-                token = null;
+                Keep(null);
             }
             else if (current is { Renewable: true, Lease: { } lease } && left < lease / 2)
             {
                 try
                 {
-                    token = await new VaultClient(Configuration, current.Token).RenewSelfAsync();
+                    Keep(await new VaultClient(Configuration, current.Token).RenewSelfAsync());
                     SetState(VaultState.SignedIn);
                 }
                 catch (VaultException)
@@ -303,7 +363,7 @@ internal sealed class VaultSession(VaultProfile profile)
         }
         catch (VaultException error) when (error.IsDenied && Configuration.AuthMethod != AuthMethod.Token)
         {
-            token = null;
+            Keep(null);
             if (Configuration.AuthMethod == AuthMethod.Oidc)
             {
                 SetState(VaultState.SignedOut);

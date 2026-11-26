@@ -118,6 +118,19 @@ public sealed class OidcSignInPolicyTests
                         Policy.Decide("http://login.example.com/authorize"));
 }
 
+/// <summary>A token as the app keeps it.</summary>
+[TestClass]
+public sealed class TokenTests
+{
+    [TestMethod]
+    public void ATokenSurvivesItsJson()
+    {
+        var token = new VaultToken("hvs.x", new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.FromHours(1)), true,
+                                   TimeSpan.FromHours(8));
+        Assert.AreEqual(token, System.Text.Json.JsonSerializer.Deserialize<VaultToken>(System.Text.Json.JsonSerializer.Serialize(token)));
+    }
+}
+
 /// <summary>The problems of failed calls, in words.</summary>
 [TestClass]
 public sealed class ProblemTests

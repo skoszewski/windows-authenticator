@@ -95,8 +95,15 @@ internal sealed class TrayContext : ApplicationContext
             foreach (var account in store.Accounts)
             {
                 var submenu = new ToolStripMenuItem(Escaped(account.Name));
-                submenu.DropDownItems.Add("Copy Code", null, async (_, _) => await CopyCodeAsync(account));
-                submenu.DropDownItems.Add("Show", null, (_, _) => Show(account));
+                if (account.Kind == AccountKind.Secret)
+                {
+                    submenu.DropDownItems.Add("Copy Secret", null, async (_, _) => await Dialogs.CopySecretAsync(store, account));
+                }
+                else
+                {
+                    submenu.DropDownItems.Add("Copy Code", null, async (_, _) => await CopyCodeAsync(account));
+                    submenu.DropDownItems.Add("Show", null, (_, _) => Show(account));
+                }
                 menu.Items.Add(submenu);
             }
         }

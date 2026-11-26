@@ -35,7 +35,7 @@ account closes it.
 
 ## Each account is a generic credential of Credential Manager
 
-Each account is one `CRED_TYPE_GENERIC` credential persisted with `CRED_PERSIST_LOCAL_MACHINE`,
+Each OTP account is one `CRED_TYPE_GENERIC` credential persisted with `CRED_PERSIST_LOCAL_MACHINE`,
 so it stays on this computer and does not roam with a roaming profile. Its blob is the secret
 alone, as the base32 text it was given in, and no serialised structure holds a secret. The rest
 of the account is in the credential's other fields: the id in the target name after the
@@ -154,11 +154,24 @@ A Vault account holds nothing secret, only its vault and the name of its key, so
 key under `VaultAccounts` and has no credential. Removing a vault removes its accounts, whose keys
 stay in Vault, since they cannot show a code without it.
 
-## The OIDC token is kept in memory and the sign-in is explicit
+## The OIDC token is kept in Credential Manager and the sign-in is explicit
 
-The identity provider signs the user in, so the app stores no credential for OIDC, and it keeps
-the resulting Vault token in memory alone: a sign-in is repeated after each start and when the
-token ends. The sign-in window is opened from Sign In only, never because a code was needed, so a
+The identity provider signs the user in, so the app stores no credential for OIDC. It keeps the
+resulting Vault token in Credential Manager, as the generic credential
+`pl.waw.koszewscy.WindowsAuthenticator.vault.token:<id>` with the token's JSON as its blob, so an
+OIDC vault stays signed in after a start of the app until its token ends, as a browser keeps a
+session. The token has the same protection as the other credentials. It is taken up when the
+session is made unless it ends within five seconds, written whenever a sign-in or a renewal gives
+a new one, and deleted when the vault signs out, changes or is removed, and when Vault refuses
+it; all of this goes through one method of the session, so no path can forget the stored copy. A
+Credential Manager that refuses is written to the log and the token still works in memory, since
+losing the kept copy costs only a sign-in after the next start. The target prefix is of its own,
+so a profile's credential is never taken for a token.
+
+Test Connection of a signed-in OIDC vault checks that token and lists the keys with it, when the
+typed address and namespace are the saved vault's, so the token goes to that server alone.
+
+The sign-in window is opened from Sign In only, never because a code was needed, so a
 window opening in the background cannot start a login nobody expects. The other methods sign in
 by themselves, since they need no user.
 
@@ -206,24 +219,90 @@ pages in WebView2 and reading the redirect; the view has no Edge session and no 
 sign-on, some providers refuse embedded views, and the app can in principle see what is typed in
 it. A provider for which this matters needs the browser.
 
-## Vault Setup writes two policies, replaces nothing unasked, and assigns nothing
+## Vault Setup writes policies for each engine, replaces nothing unasked, and assigns nothing
 
-Setup enables the TOTP engine and writes `totp_creator` and `totp_user` with the identity the
-vault's page describes, and stops at the first call that fails: Vault's own answer, such as a
-path already in use or a refused write, says what is wrong, and a half-done setup that went on
-would hide it. The identity is the page as typed, like Test Connection, so an administrator's
-token need not be saved as the vault's credential. The sign-in of the page's method is
-`VaultClient.SignInAsync`, which Test Connection and the setup share.
+Setup enables the TOTP engine and writes `totp_creator` and `totp_user`, and, when asked, enables a
+KV v2 engine and writes `kv_creator` and `kv_user`, and a KV v1 engine with `kv1_creator` and
+`kv1_user`, with the identity the vault's page describes, and stops at the first call that fails:
+Vault's own answer, such as a path already in use or a refused write, says what is wrong, and a
+half-done setup that went on would hide it. The identity is the page as typed, like Test
+Connection, so an administrator's token need not be saved as the vault's credential. The sign-in of
+the page's method is `VaultClient.SignInAsync`, which Test Connection and the setup share.
 
-The creator policy holds `read` as well as `create` and `update`, because the app reads a key to
-check that the name is free and to make the account. The user policy holds `read` on keys and
+The TOTP creator policy holds `read` as well as `create` and `update`, because the app reads a key
+to check that the name is free and to make the account. The user policy holds `read` on keys and
 `list`, beside `read` on codes: reading a key returns its issuer, account name, algorithm, digits
 and period but never the secret, and adding an account from a vault needs them. Neither holds
 `delete` or `sudo`. A user who adds accounts and shows codes needs both policies.
 
+The KV setup is for either version, each its own part with its own mount and policy names, and the
+engine is mounted with the option `version` stated, since the default of an engine is Vault's to
+change. A version 2 policy has to name the `data/` and `metadata/` paths; a version 1 policy names
+the mount's paths alone, `<mount>/*` with `list` and the rest, and has no `patch`, which version 1
+has no call for. The version 2 creator policy holds `create`, `update`, `patch` and `read` on
+`<mount>/data/*`, since writing a field of a secret that exists is a patch and of one that does
+not, a create, and `list` on `<mount>/metadata`; the user policy holds `read` and `list`. Neither
+holds `delete`, `destroy` or `sudo`, so a secret cannot be deleted through them. The parts are
+chosen separately, may not share a mount or a policy name, and run in the order TOTP, KV v2, KV
+v1. The engine bodies and secret fields are sent as JSON nodes, not through the client's snake-case
+naming, since their names are Vault's and the user's.
+
 A policy of the same name is not replaced unless the dialog is told to, since a write replaces
 the whole policy of a vault that may use it for more than this. Policies are assigned by the
 vault's administrator, not by the setup, so the setup grants nobody access.
+
+## A secret account is a kind of account, in the same list
+
+An account is an OTP account or a secret account (`AccountKind`, OTP by default). A secret account
+has no algorithm, digits or period that anything reads, but it shares the id, the name, the
+unique-name rule, the menu order and the removal of the other accounts, so the menu, the Accounts
+tab and the stored order need no second list. Everything that computes or shows a code works on
+OTP accounts alone: a secret account has no window and its secret is never held for one, so a
+secret is never drawn on the screen unasked. It is copied, or revealed in the Settings window
+until the user hides it or selects another account.
+
+## A secret account in Credential Manager has a target prefix of its own
+
+The credentials of OTP accounts are matched by the filter `pl.waw.koszewscy.WindowsAuthenticator:*`,
+and one whose parameters attribute is missing is dropped. A secret kept under the same prefix would
+be listed by a build that knows no secret accounts the moment it carried a parameters attribute,
+and shown as codes computed from a password. The prefix
+`pl.waw.koszewscy.WindowsAuthenticator.secret:`, which that filter does not match, keeps them apart.
+The blob is the secret as UTF-8, at most `CRED_MAX_CREDENTIAL_BLOB_SIZE`, 2560 bytes, and a longer
+one is refused when it is added.
+
+## A Vault secret is a reference to one field, and the KV version is the user's choice
+
+The reference is the KV version, the mount, the secret's name and the field: a secret is a single
+level of fields, and the account is one of them. The user names the KV version, since the call
+that tells it, `sys/internal/ui/mounts/<mount>`, has no stability guarantee in Vault's
+documentation, and a wrong guess reads or writes the wrong paths. The registry key of a Vault
+account gains a kind and the four parts of the reference, which keys written before secret
+accounts lack, so they stay OTP accounts.
+
+Writing sets one field and keeps the rest of the secret. KV v2 patches the secret
+(`application/merge-patch+json`) and, when it does not exist, creates it with `cas` 0, so a
+concurrent creation is not overwritten. KV v1 has no merge, so the secret is read, the field set
+and the secret written back from the JSON the vault returned, which keeps fields of other types.
+
+## A copied secret is kept out of the clipboard history and cleared
+
+A copied secret goes to the clipboard with the registered formats Windows documents for this,
+`ExcludeClipboardContentFromMonitorProcessing`, and `CanIncludeInClipboardHistory` and
+`CanUploadToCloudClipboard` as a DWORD 0, so it stays out of the clipboard history and the cloud
+clipboard. The copy is made with the Win32 clipboard calls and a message-only window as the owner,
+since the .NET 10 `DataObject` documents no raw data of a custom format, and a clipboard emptied
+without an owner takes no data. The clipboard is emptied after 30 seconds if
+`GetClipboardSequenceNumber` is still that of the copy, so a later copy of the user's is not lost.
+A TOTP code expires on its own and is copied as plain text.
+
+## About names the commit through Source Link
+
+The .NET SDK includes Source Link, which sets `SourceRevisionId` to the commit the app is built
+from and appends it to `InformationalVersion` after a `+`. About shows the version and that id cut
+to seven characters, the length `git log --oneline` shows in this repository, as the build number,
+so a build can be told from another of the same version. A build outside a git repository has no
+id, and About shows the version alone.
 
 ## Vault codes are fetched, never computed
 

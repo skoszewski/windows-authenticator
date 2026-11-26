@@ -24,9 +24,11 @@ public static class VaultDiagnostics
 {
     /// <summary>
     /// Runs the steps in order, stopping after a step that fails; the credential is the token, the password or
-    /// the SecretID of the configured method.
+    /// the SecretID of the configured method. The token of an OIDC vault's current sign-in is checked and used for
+    /// the engine step; without one an OIDC vault is not tested.
     /// </summary>
-    public static async Task<IReadOnlyList<VaultCheck>> RunAsync(VaultConfiguration configuration, string? credential)
+    public static async Task<IReadOnlyList<VaultCheck>> RunAsync(VaultConfiguration configuration, string? credential,
+                                                                 VaultToken? signedInToken = null)
     {
         var checks = new List<VaultCheck>();
         var client = new VaultClient(configuration);
@@ -88,23 +90,28 @@ public static class VaultDiagnostics
             return checks;
         }
 
-        // Authentication: a token is checked, a password or an AppRole is logged in, OIDC is not tested.
+        // Authentication: a token is checked, a password or an AppRole is logged in, OIDC is checked when it has
+        // a token and is not tested otherwise.
         var method = configuration.AuthMethod;
+        var signedIn = method == AuthMethod.Oidc ? signedInToken : null;
+        var checksToken = method == AuthMethod.Token || signedIn is not null;
         var step = method switch
         {
-            AuthMethod.Token => "Token",
             AuthMethod.Userpass or AuthMethod.Approle => "Login",
+            _ when checksToken => "Token",
             _ => "Authentication",
         };
         VaultToken? token;
         try
         {
-            token = await VaultClient.SignInAsync(configuration, credential).ConfigureAwait(false);
+            token = signedIn is null
+                ? await VaultClient.SignInAsync(configuration, credential).ConfigureAwait(false)
+                : await new VaultClient(configuration, signedIn.Token).LookupSelfAsync().ConfigureAwait(false);
             checks.Add((method, token) switch
             {
-                (AuthMethod.Token, { Expires: { } end }) => new VaultCheck(
+                (AuthMethod.Token or AuthMethod.Oidc, { Expires: { } end }) => new VaultCheck(
                     step, VaultCheckOutcome.Passed, $"The token is valid until {end.ToLocalTime():g}.", null),
-                (AuthMethod.Token, not null) => new VaultCheck(
+                (AuthMethod.Token or AuthMethod.Oidc, not null) => new VaultCheck(
                     step, VaultCheckOutcome.Passed, "The token is valid and has no end.", null),
                 (AuthMethod.Userpass, _) => new VaultCheck(
                     step, VaultCheckOutcome.Passed, $"Vault issued a token to the user {configuration.Username}.", null),
@@ -115,7 +122,7 @@ public static class VaultDiagnostics
         }
         catch (Exception error) when (error is VaultException or EmptyValueException)
         {
-            var message = method == AuthMethod.Token ? "Vault did not accept the token." : "Vault refused the login.";
+            var message = checksToken ? "Vault did not accept the token." : "Vault refused the login.";
             checks.Add(new VaultCheck(step, VaultCheckOutcome.Failed, message, VaultProblem.From(error, method)));
             return checks;
         }

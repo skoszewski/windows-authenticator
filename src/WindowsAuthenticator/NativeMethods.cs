@@ -3,7 +3,7 @@ using FILETIME = System.Runtime.InteropServices.ComTypes.FILETIME;
 
 namespace WindowsAuthenticator;
 
-/// <summary>The Win32 functions of Credential Manager (wincred.h) and the window style of user32.</summary>
+/// <summary>The Win32 functions of Credential Manager (wincred.h), of the clipboard, and the window style of user32.</summary>
 internal static unsafe partial class NativeMethods
 {
     public const uint CredTypeGeneric = 1;
@@ -60,4 +60,42 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport("advapi32.dll", EntryPoint = "CredFree")]
     public static partial void CredFree(void* buffer);
+
+    public const uint CfUnicodeText = 13;
+    public const uint GmemMoveable = 0x0002;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OpenClipboard(nint owner);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseClipboard();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EmptyClipboard();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint SetClipboardData(uint format, nint memory);
+
+    [LibraryImport("user32.dll", EntryPoint = "RegisterClipboardFormatW", SetLastError = true,
+                   StringMarshalling = StringMarshalling.Utf16)]
+    public static partial uint RegisterClipboardFormat(string name);
+
+    [LibraryImport("user32.dll")]
+    public static partial uint GetClipboardSequenceNumber();
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint GlobalAlloc(uint flags, nuint bytes);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial void* GlobalLock(nint memory);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GlobalUnlock(nint memory);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nint GlobalFree(nint memory);
 }

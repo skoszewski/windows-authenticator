@@ -25,7 +25,11 @@ internal sealed class SettingsWindow : Form
     private readonly Button removeAccount = new() { Text = "Remove", AutoSize = true, Enabled = false };
     private readonly Button removeVault = new() { Text = "Remove", AutoSize = true, Enabled = false };
     private readonly Font bold;
+    private readonly Font fixedWidth = new("Consolas", 10f);
     private readonly List<(Label Label, bool Wide)> wrapping = [];
+
+    /// <summary>The secret shown on the page of its account until it is hidden or another account is selected.</summary>
+    private (Guid Account, string Value)? revealed;
     private VaultEditor? editor;
     private bool refreshing;
     private bool quitting;
@@ -57,6 +61,7 @@ internal sealed class SettingsWindow : Form
         accounts.SmallImageList = images;
         vaults.SmallImageList = images;
         accounts.Columns.Add("Account");
+        accounts.Columns.Add("Kind");
         accounts.Columns.Add("Store");
         vaults.Columns.Add("Vault");
         foreach (var list in new[] { accounts, vaults })
@@ -70,7 +75,12 @@ internal sealed class SettingsWindow : Form
         var fromVault = addMenu.Items.Add("From Vault...", null, async (_, _) => await Dialogs.AddFromVaultAsync(store, this));
         var generate = addMenu.Items.Add("Generate in Vault...", null, async (_, _) => await Dialogs.GenerateAccountAsync(store, this));
         var import = addMenu.Items.Add("Import to Vault...", null, async (_, _) => await Dialogs.ImportAccountAsync(store, this));
-        addMenu.Opening += (_, _) => fromVault.Enabled = generate.Enabled = import.Enabled = store.Vaults.Count > 0;
+        addMenu.Items.Add(new ToolStripSeparator());
+        addMenu.Items.Add("Secret...", null, (_, _) => Dialogs.AddSecret(store, this));
+        var secretFrom = addMenu.Items.Add("Secret from Vault...", null, (_, _) => Dialogs.AddVaultSecret(store, writing: false, this));
+        var secretIn = addMenu.Items.Add("Secret in Vault...", null, (_, _) => Dialogs.AddVaultSecret(store, writing: true, this));
+        addMenu.Opening += (_, _) =>
+            fromVault.Enabled = generate.Enabled = import.Enabled = secretFrom.Enabled = secretIn.Enabled = store.Vaults.Count > 0;
         var addAccount = new Button { Text = "Add...", AutoSize = true };
         addAccount.Click += (_, _) => addMenu.Show(addAccount, new Point(0, addAccount.Height));
         removeAccount.Click += (_, _) =>
@@ -162,8 +172,9 @@ internal sealed class SettingsWindow : Form
             list.Columns[0].Width = width;
             return;
         }
-        list.Columns[0].Width = width * 55 / 100;
-        list.Columns[1].Width = width - list.Columns[0].Width;
+        list.Columns[0].Width = width * 45 / 100;
+        list.Columns[1].Width = width * 15 / 100;
+        list.Columns[2].Width = width - list.Columns[0].Width - list.Columns[1].Width;
     }
 
     /// <summary>
@@ -256,6 +267,7 @@ internal sealed class SettingsWindow : Form
         {
             var item = new ListViewItem(account.Name) { Tag = account };
             item.ImageKey = store.Problem(account) is null ? "" : WarningImage;
+            item.SubItems.Add(account.Kind == AccountKind.Secret ? "Secret" : "TOTP");
             item.SubItems.Add(store.Source(account));
             accounts.Items.Add(item);
             item.Selected = account.Id == selectedAccount;
@@ -291,6 +303,10 @@ internal sealed class SettingsWindow : Form
     private void ShowAccountDetails()
     {
         var account = SelectedAccount is { } selected ? store.Accounts.FirstOrDefault(a => a.Id == selected.Id) : null;
+        if (revealed?.Account != account?.Id)
+        {
+            revealed = null;
+        }
         removeAccount.Enabled = account is not null;
         accountDetails.SuspendLayout();
         foreach (Control control in accountDetails.Controls.Cast<Control>().ToList())
@@ -330,16 +346,17 @@ internal sealed class SettingsWindow : Form
         }
 
         var vaultKey = store.VaultKeyOf(account);
+        var vaultProfile = store.VaultProfileOf(account);
         if (store.Problem(account) is { } problem)
         {
             Heading("Problem");
             Wide(new Label { Text = problem.Title, AutoSize = true, ForeColor = Color.Firebrick });
             Wide(Wrapped(new Label { Text = problem.Detail, AutoSize = true }, wide: true));
             Wide(Wrapped(new Label { Text = problem.Suggestion, AutoSize = true, ForeColor = SystemColors.GrayText }, wide: true));
-            if (vaultKey is not null && store.Vault(vaultKey.Profile) is not null)
+            if (vaultProfile is { } profile && store.Vault(profile) is not null)
             {
                 var showVault = new Button { Text = "Show Vault", AutoSize = true };
-                showVault.Click += (_, _) => Present(vaultKey.Profile);
+                showVault.Click += (_, _) => Present(profile);
                 Wide(showVault);
             }
         }
@@ -353,6 +370,49 @@ internal sealed class SettingsWindow : Form
         if (vaultKey is not null)
         {
             Row("Vault key", vaultKey.Key);
+        }
+        if (store.VaultSecretOf(account)?.Reference is { } reference)
+        {
+            Row("KV version", $"v{(int)reference.Version}");
+            Row("Mount", reference.Mount);
+            Row("Secret name", reference.Name);
+            Row("Field", reference.Field);
+        }
+        if (account.Kind == AccountKind.Secret)
+        {
+            Heading("Secret");
+            if (revealed is { } shown)
+            {
+                Wide(new TextBox { Text = shown.Value, ReadOnly = true, Font = fixedWidth, Dock = DockStyle.Fill });
+            }
+            var secretButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 0) };
+            var reveal = new Button { Text = revealed is null ? "Reveal" : "Hide", AutoSize = true };
+            reveal.Click += async (_, _) =>
+            {
+                if (revealed is not null)
+                {
+                    revealed = null;
+                    ShowAccountDetails();
+                    return;
+                }
+                try
+                {
+                    revealed = (account.Id, await store.SecretValueAsync(account));
+                }
+                catch (Exception error)
+                {
+                    Dialogs.ShowProblem("The secret was not read", error, this);
+                }
+                ShowAccountDetails();
+            };
+            var copySecret = new Button { Text = "Copy Secret", AutoSize = true };
+            copySecret.Click += async (_, _) => await Dialogs.CopySecretAsync(store, account, this);
+            secretButtons.Controls.Add(reveal);
+            secretButtons.Controls.Add(copySecret);
+            Wide(secretButtons);
+            accountDetails.Controls.Add(layout);
+            accountDetails.ResumeLayout();
+            return;
         }
         Heading("Code");
         Row("Algorithm", account.Algorithm.Name());
@@ -449,6 +509,7 @@ internal sealed class SettingsWindow : Form
             images.Dispose();
             addMenu.Dispose();
             bold.Dispose();
+            fixedWidth.Dispose();
         }
         base.Dispose(disposing);
     }

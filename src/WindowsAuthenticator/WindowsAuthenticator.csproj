@@ -8,7 +8,6 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationVisualStyles>true</ApplicationVisualStyles>
-    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <AssemblyTitle>Windows Authenticator</AssemblyTitle>
     <RootNamespace>WindowsAuthenticator</RootNamespace>
     <ApplicationIcon>Resources\AppIcon.ico</ApplicationIcon>

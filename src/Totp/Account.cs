@@ -4,7 +4,18 @@ using System.Security.Cryptography;
 
 namespace Totp;
 
-/// <summary>A registered account: its name and the RFC 6238 parameters of its codes, without its secret.</summary>
+/// <summary>The kind of an account: one that shows TOTP codes, or one that holds a plain secret.</summary>
+public enum AccountKind
+{
+    Otp,
+    Secret,
+}
+
+/// <summary>
+/// A registered account: its name and, for an OTP account, the RFC 6238 parameters of its codes, without its
+/// secret. A secret account holds a plain string and has no codes; its algorithm, digits and period are the
+/// defaults, which nothing reads.
+/// </summary>
 public sealed record Account
 {
     public const int MinDigits = 6;
@@ -35,6 +46,10 @@ public sealed record Account
     {
     }
 
+    /// <summary>A secret account.</summary>
+    public static Account Secret(Guid id, string name) => new(id, name) { Kind = AccountKind.Secret };
+
+    public AccountKind Kind { get; private init; } = AccountKind.Otp;
     public Guid Id { get; }
     public string Name { get; }
     public string? Issuer { get; }

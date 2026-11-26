@@ -1,10 +1,12 @@
+using System.Drawing.Drawing2D;
 using Totp;
 
 namespace WindowsAuthenticator;
 
 /// <summary>
 /// A small window over the others showing one account's code, the time left of it and a Copy button, or
-/// why the code cannot be shown. It does not take activation, so Copy leaves the other app in front.
+/// why the code cannot be shown. A Vault code not yet fetched keeps that layout with an empty code and a dot
+/// in the bottom right corner. It does not take activation, so Copy leaves the other app in front.
 /// </summary>
 internal sealed class CodeWindow : Form
 {
@@ -27,6 +29,7 @@ internal sealed class CodeWindow : Form
     };
     private readonly Button copy = new() { Text = "Copy", AutoSize = true, Anchor = AnchorStyles.Right };
     private readonly Label error = new() { AutoSize = true, MaximumSize = new Size(260, 0), Visible = false };
+    private bool waiting;
 
     public CodeWindow(AccountStore store, Account account)
     {
@@ -75,6 +78,19 @@ internal sealed class CodeWindow : Form
             }
         };
         bar.Maximum = account.Period;
+        // The dot shows that the code is being fetched from Vault.
+        Paint += (_, e) =>
+        {
+            if (!waiting)
+            {
+                return;
+            }
+            var size = LogicalToDeviceUnits(6);
+            var inset = LogicalToDeviceUnits(4);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.FillEllipse(SystemBrushes.GrayText, ClientSize.Width - inset - size, ClientSize.Height - inset - size,
+                                   size, size);
+        };
         ShowCode(DateTimeOffset.Now);
     }
 
@@ -93,26 +109,32 @@ internal sealed class CodeWindow : Form
     }
 
     /// <summary>
-    /// Shows the code of the given time, or why there is none: the problem of the account's vault, a code not
-    /// yet fetched, or a secret not read.
+    /// Shows the code of the given time, an empty code while a Vault code is fetched, or why there is none: the
+    /// problem of the account's vault, or a secret not read.
     /// </summary>
     public void ShowCode(DateTimeOffset now)
     {
         var current = store.Code(account, now);
-        var shown = current is not null;
+        var problem = store.Problem(account);
+        var wasWaiting = waiting;
+        waiting = current is null && store.VaultKeyOf(account) is not null && problem is null
+                  && store.SecretError(account.Id) is null;
+        if (waiting != wasWaiting)
+        {
+            Invalidate();
+        }
+        var shown = current is not null || waiting;
         code.Visible = bar.Visible = seconds.Visible = copy.Visible = shown;
         error.Visible = !shown;
-        if (current is null)
+        if (!shown)
         {
-            error.Text = store.Problem(account) is { } problem
+            error.Text = problem is not null
                 ? $"{problem.Title}{Environment.NewLine}{problem.Suggestion}"
-                : store.VaultKeyOf(account) is not null
-                    ? "The code is fetched from Vault."
-                    : store.SecretError(account.Id) ?? "The secret is not read.";
+                : store.SecretError(account.Id) ?? "The secret is not read.";
             return;
         }
         var left = account.SecondsLeft(now);
-        code.Text = Grouped(current);
+        code.Text = current is null ? " " : Grouped(current);
         bar.Value = left;
         seconds.Text = $"{left}s";
     }

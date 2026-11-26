@@ -144,6 +144,13 @@ public static class VaultDevServer
         });
         await AdminAsync("POST", "team/totp/keys/shared", new { key = Secret, account_name = "team" });
 
+        await AdminAsync("POST", "sys/mounts/kv1", new { type = "kv", options = new { version = "1" } });
+        await AdminAsync("POST", "sys/mounts/kv2", new { type = "kv", options = new { version = "2" } });
+        await AdminAsync("POST", "kv1/app", new { password = "p1", other = "keep1" });
+        await AdminAsync("POST", "kv1/dir/inner", new { password = "x" });
+        await AdminAsync("POST", "kv2/data/app", new { data = new { password = "p2", other = "keep2" } });
+        await AdminAsync("POST", "kv2/data/dir/inner", new { data = new { password = "x" } });
+
         await AdminAsync("PUT", "sys/policies/acl/full", new { policy = Policy(true) });
         await AdminAsync("PUT", "sys/policies/acl/nolist", new { policy = Policy(false) });
 

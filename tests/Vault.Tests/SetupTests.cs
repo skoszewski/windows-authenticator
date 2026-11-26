@@ -83,6 +83,48 @@ public sealed class SetupTests
         CollectionAssert.AreEqual(new[] { "Settings" }, checks.Select(c => c.Step).ToList());
         CollectionAssert.AreEqual(new[] { VaultCheckOutcome.Failed }, Outcomes(checks));
     }
+
+    private static KvSetupOptions Kv(KvVersion version, string mount, string creator, string user) =>
+        KvSetupOptions.Default(version) with { Mount = mount, CreatorPolicy = creator, UserPolicy = user };
+
+    [TestMethod]
+    [DataRow(KvVersion.V2, "setup-e/kv", "setup_e")]
+    [DataRow(KvVersion.V1, "setup-g/kv", "setup_g")]
+    public async Task TheSetupOfAKvEngineLetsTheCreatorWriteAndTheUserRead(KvVersion version, string mount, string prefix)
+    {
+        var kv = Kv(version, mount, $"{prefix}_creator", $"{prefix}_user");
+        var options = version == KvVersion.V2 ? new VaultSetupOptions(Totp: false, Kv: kv) : new VaultSetupOptions(Totp: false, Kv1: kv);
+        var checks = await VaultSetup.RunAsync(Client(VaultDevServer.RootToken), options);
+        var label = $"KV v{(int)version}";
+        CollectionAssert.AreEqual(new[] { $"{label} engine", $"{label} creator policy", $"{label} user policy" },
+                                  checks.Select(c => c.Step).ToList());
+        CollectionAssert.AreEqual(AllPassed, Outcomes(checks));
+
+        var reference = new SecretReference(version, mount, "app", "password");
+        var creator = Client(await VaultDevServer.TokenAsync($"{prefix}_creator"));
+        await creator.WriteSecretAsync(reference, "one");
+        await creator.WriteSecretAsync(reference with { Field = "second" }, "two");
+        Assert.AreEqual("one", await creator.ReadSecretAsync(reference));
+        CollectionAssert.AreEqual(new[] { "app" }, (await creator.ListSecretsAsync(mount, version)).ToList());
+
+        var user = Client(await VaultDevServer.TokenAsync($"{prefix}_user"));
+        Assert.AreEqual("one", await user.ReadSecretAsync(reference));
+        CollectionAssert.AreEqual(new[] { "app" }, (await user.ListSecretsAsync(mount, version)).ToList());
+        Assert.IsTrue((await Assert.ThrowsExactlyAsync<VaultException>(() => user.WriteSecretAsync(reference, "three"))).IsDenied);
+    }
+
+    [TestMethod]
+    public async Task TheSetupOfEveryEngineRunsTheTotpStepsFirstThenKvV2ThenKvV1()
+    {
+        var options = new VaultSetupOptions("setup-h/totp", CreatorPolicy: "setup_h_creator", UserPolicy: "setup_h_user",
+                                            Kv: Kv(KvVersion.V2, "setup-h/kv2", "setup_h_kv2_creator", "setup_h_kv2_user"),
+                                            Kv1: Kv(KvVersion.V1, "setup-h/kv1", "setup_h_kv1_creator", "setup_h_kv1_user"));
+        var checks = await VaultSetup.RunAsync(Client(VaultDevServer.RootToken), options);
+        CollectionAssert.AreEqual(new[] { "Engine", "KV v2 engine", "KV v1 engine" },
+                                  checks.Select(c => c.Step).Where(s => s.EndsWith("engine", StringComparison.OrdinalIgnoreCase)).ToList());
+        Assert.AreEqual(9, checks.Count);
+        Assert.IsTrue(checks.All(c => c.Outcome == VaultCheckOutcome.Passed));
+    }
 }
 
 /// <summary>The texts and the checks of the setup's policies, without a server.</summary>
@@ -123,6 +165,25 @@ public sealed class SetupPolicyTests
         [new VaultSetupOptions(CreatorPolicy: "")],
         [new VaultSetupOptions(UserPolicy: "has space")],
         [new VaultSetupOptions(CreatorPolicy: "same", UserPolicy: "same")],
+        [new VaultSetupOptions(Totp: false)],
+        [new VaultSetupOptions(Kv: KvSetupOptions.Default(KvVersion.V2) with { Mount = "totp" })],
+        [new VaultSetupOptions(Kv: KvSetupOptions.Default(KvVersion.V2) with { Mount = "" })],
+        [new VaultSetupOptions(Kv: KvSetupOptions.Default(KvVersion.V2) with { CreatorPolicy = "totp_creator" })],
+        [new VaultSetupOptions(Kv: KvSetupOptions.Default(KvVersion.V2) with { UserPolicy = "has space" })],
+        [new VaultSetupOptions(Kv: KvSetupOptions.Default(KvVersion.V2),
+                               Kv1: KvSetupOptions.Default(KvVersion.V1) with { Mount = "secret" })],
+        [new VaultSetupOptions(Kv: KvSetupOptions.Default(KvVersion.V2),
+                               Kv1: KvSetupOptions.Default(KvVersion.V1) with { CreatorPolicy = "kv_creator" })],
+        [new VaultSetupOptions(Totp: false, Kv1: KvSetupOptions.Default(KvVersion.V1) with { Mount = "" })],
+    ];
+
+    public static IEnumerable<object[]> UsableOptions =>
+    [
+        [new VaultSetupOptions()],
+        [new VaultSetupOptions(Kv: KvSetupOptions.Default(KvVersion.V2))],
+        [new VaultSetupOptions(Totp: false, Kv: KvSetupOptions.Default(KvVersion.V2))],
+        [new VaultSetupOptions(Totp: false, Kv1: KvSetupOptions.Default(KvVersion.V1))],
+        [new VaultSetupOptions(Kv: KvSetupOptions.Default(KvVersion.V2), Kv1: KvSetupOptions.Default(KvVersion.V1))],
     ];
 
     [TestMethod]
@@ -131,5 +192,35 @@ public sealed class SetupPolicyTests
         Assert.IsNotNull(VaultSetup.Problem(options));
 
     [TestMethod]
-    public void TheDefaultsAreUsable() => Assert.IsNull(VaultSetup.Problem(new VaultSetupOptions()));
+    [DynamicData(nameof(UsableOptions))]
+    public void TheDefaultsAreUsable(VaultSetupOptions options) => Assert.IsNull(VaultSetup.Problem(options));
+
+    [TestMethod]
+    public void TheKvCreatorPolicyListsAndWritesAndReadsSecrets()
+    {
+        var policy = VaultSetup.KvCreatorPolicy("secret");
+        StringAssert.Contains(policy, "path \"secret/metadata\" {\n  capabilities = [\"list\"]");
+        StringAssert.Contains(policy, "path \"secret/data/*\" {\n  capabilities = [\"create\", \"update\", \"patch\", \"read\"]");
+        Assert.IsFalse(policy.Contains("delete", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void TheKvUserPolicyListsAndReadsSecrets()
+    {
+        var policy = VaultSetup.KvUserPolicy("/team/secret/");
+        StringAssert.Contains(policy, "path \"team/secret/metadata\" {\n  capabilities = [\"list\"]");
+        StringAssert.Contains(policy, "path \"team/secret/data/*\" {\n  capabilities = [\"read\"]");
+        Assert.IsFalse(policy.Contains("create", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void TheKvV1PoliciesNameTheMountsPathsWithoutDataOrMetadata()
+    {
+        var creator = VaultSetup.KvCreatorPolicy("kv", KvVersion.V1);
+        StringAssert.Contains(creator, "path \"kv/*\" {\n  capabilities = [\"list\", \"create\", \"update\", \"read\"]");
+        Assert.IsFalse(creator.Contains("data", StringComparison.Ordinal) || creator.Contains("patch", StringComparison.Ordinal));
+        var user = VaultSetup.KvUserPolicy("/kv/", KvVersion.V1);
+        StringAssert.Contains(user, "path \"kv/*\" {\n  capabilities = [\"list\", \"read\"]");
+        Assert.IsFalse(user.Contains("create", StringComparison.Ordinal));
+    }
 }

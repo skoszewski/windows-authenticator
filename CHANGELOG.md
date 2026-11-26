@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.0 - 2026-11-26 05:55:40 +0100
+
+feature: secret accounts, plain strings kept in Credential Manager or in a field of a Vault KV
+secret, next to the TOTP accounts, KV v2 and v1 engines in Vault Setup, and the OIDC token kept
+in Credential Manager.
+
+- **Secret...** in the **Add...** menu of the Accounts tab adds a secret account whose secret is
+  kept in Credential Manager, under a target prefix of its own.
+- **Secret from Vault...** adds a secret account that reads one field of a secret of a KV v1 or v2
+  engine, named by the KV version, the mount, the secret and the field; **Secret in Vault...** also
+  sets the field, creating the secret when it does not exist and keeping its other fields.
+- A secret account has **Copy Secret** in the menu and in Settings, and **Reveal** and **Hide** in
+  Settings. A copied secret is kept out of the clipboard history and the cloud clipboard, and
+  cleared from the clipboard after 30 seconds. A secret account has no window.
+- Vault Setup can also enable a KV v2 engine and write the policies `kv_creator`, which lists,
+  creates, updates, patches and reads secrets, and `kv_user`, which lists and reads them, and a KV
+  v1 engine with `kv1_creator` and `kv1_user`; the TOTP, KV v2 and KV v1 parts are each switched
+  on or off.
+- The Vault token of an OIDC sign-in is kept in Credential Manager, so an OIDC vault is signed in
+  after a start of the app until its token ends; Sign Out, a change of the vault, a token that
+  ended or was refused, and the removal of the vault delete it.
+- Test Connection of a signed in OIDC vault checks the token of the sign-in and lists the keys of
+  the TOTP engine with it; the token goes to the vault's own address alone.
+- The code window of a Vault account keeps its layout while a code is fetched: the code is empty
+  and a small dot in the bottom right corner shows that it is being fetched.
+- About shows the commit the app was built from after the version, as `git log --oneline`
+  abbreviates it.
+
 ## 0.4.1 - 2026-11-25 14:33:01 +0100
 
 fix: the OIDC sign-in window shows the identity provider's page in the whole window.
