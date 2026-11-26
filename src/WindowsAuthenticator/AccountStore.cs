@@ -496,7 +496,7 @@ internal sealed class AccountStore : IDisposable
     /// Whether the user must verify to see or copy the secret: the account asks, and the user has not verified
     /// within the seconds it allows.
     /// </summary>
-    public bool NeedsAuthentication(Account account) =>
+    private bool NeedsAuthentication(Account account) =>
         account.Settings.RequiresAuthentication
         && !(account.Settings.AuthenticationSeconds > 0 && lastAuthentication is { } last
              && DateTimeOffset.Now - last < TimeSpan.FromSeconds(account.Settings.AuthenticationSeconds));
@@ -532,31 +532,17 @@ internal sealed class AccountStore : IDisposable
     /// <summary>
     /// Puts the text of a secret account in the clipboard, after the user verifies with Windows Hello when the
     /// account needs it, kept out of the clipboard history, and empties the clipboard after 30 seconds, or when
-    /// the app quits, if it still holds that copy; false when the user cancels, and nothing is copied. Without an
-    /// owner the account must need no verification.
+    /// the app quits, if it still holds that copy; false when the user cancels, and nothing is copied.
     /// </summary>
-    public async Task<bool> CopySecretAsync(Account account, IWin32Window? owner)
+    public async Task<bool> CopySecretAsync(Account account, IWin32Window owner)
     {
-        if (NeedsAuthentication(account))
+        if (!await AuthenticatedAsync(account, owner, $"Copy the secret {account.Name}"))
         {
-            if (owner is null)
-            {
-                throw new InvalidOperationException("A secret that asks to authenticate is copied from a window.");
-            }
-            if (!await AuthenticatedAsync(account, owner, $"Copy the secret {account.Name}"))
-            {
-                return false;
-            }
+            return false;
         }
-        await CopySecretValueAsync(account, await SecretValueAsync(account));
-        return true;
-    }
-
-    /// <summary>Puts a secret read for the account in the clipboard, and tells what was copied.</summary>
-    private async Task CopySecretValueAsync(Account account, string value)
-    {
-        await ConcealedClipboard.CopyAsync(value);
+        await ConcealedClipboard.CopyAsync(await SecretValueAsync(account));
         ShowNotice($"Copied the secret {account.Name}");
+        return true;
     }
 
     /// <summary>Fetches the codes of the shown Vault accounts that have none for the present period.</summary>

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1 - 2026-11-26 12:16:39 +0100
+
+fix: the tray menu of a secret has no Copy Secret, and a secret is copied in its window or its
+details.
+
+- The tray submenu of a secret holds Show only. Copy Secret there opened the secret's window to
+  ask for Windows Hello, and could fail after a face was matched, with HRESULT 0x80098044, when
+  the window was not brought to the front.
+
 ## 0.6.0 - 2026-11-26 11:38:39 +0100
 
 feature: a secret has a window that masks it until clicked and hides it again after a countdown, it

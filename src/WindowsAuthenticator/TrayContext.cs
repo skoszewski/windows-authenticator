@@ -105,8 +105,9 @@ internal sealed class TrayContext : ApplicationContext
                 var submenu = new ToolStripMenuItem(Escaped(account.Name));
                 if (account.Kind == AccountKind.Secret)
                 {
-                    submenu.DropDownItems.Add("Copy Secret", null, async (_, _) => await CopySecretAsync(account));
-                    submenu.DropDownItems.Add("Show", null, async (_, _) => await ShowSecretAsync(account, copy: false));
+                    // Unlike Mac Authenticator, a secret has no Copy Secret here: it is copied in its window, which owns the
+                    // Windows Hello prompt.
+                    submenu.DropDownItems.Add("Show", null, (_, _) => ShowSecret(account));
                 }
                 else
                 {
@@ -181,37 +182,15 @@ internal sealed class TrayContext : ApplicationContext
         }
     }
 
-    /// <summary>
-    /// Copies the secret at once when it needs no verification, and otherwise in the account's secret window, which
-    /// owns the Windows Hello prompt.
-    /// </summary>
-    private async Task CopySecretAsync(Account account)
-    {
-        // Unlike Mac Authenticator, a copy that asks for Windows Hello runs in a window, which owns its prompt.
-        if (store.NeedsAuthentication(account))
-        {
-            await ShowSecretAsync(account, copy: true);
-            return;
-        }
-        await Dialogs.CopySecretAsync(store, account, null);
-    }
-
-    /// <summary>
-    /// Brings the account's secret window to the front, making it if it is not open, and copies the secret in it
-    /// when asked: an open window copies at once, and a new one once it is shown.
-    /// </summary>
-    private async Task ShowSecretAsync(Account account, bool copy)
+    /// <summary>Brings the account's secret window to the front, making it if it is not open.</summary>
+    private void ShowSecret(Account account)
     {
         if (secretWindows.TryGetValue(account.Id, out var open))
         {
             open.Activate();
-            if (copy)
-            {
-                await open.CopyAsync();
-            }
             return;
         }
-        var window = new SecretWindow(store, account, copyWhenShown: copy);
+        var window = new SecretWindow(store, account);
         window.FormClosed += (_, _) =>
         {
             secretWindows.Remove(account.Id);
@@ -230,7 +209,7 @@ internal sealed class TrayContext : ApplicationContext
     {
         if (account.Kind == AccountKind.Secret)
         {
-            _ = ShowSecretAsync(account, copy: false);
+            ShowSecret(account);
             return;
         }
         if (windows.TryGetValue(account.Id, out var open))

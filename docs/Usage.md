@@ -13,8 +13,8 @@ The menu opens with a right click on the icon:
 
 - a line `Vault <name>: <what is wrong>` for each vault whose last call failed; choosing it opens
   Settings on that vault;
-- one submenu for each account, named after it; a secret account's submenu has **Copy Secret**
-  and **Show**, described under Secret accounts. The submenu of a TOTP account has:
+- one submenu for each account, named after it; a secret account's submenu has **Show**,
+  described under Secret accounts. The submenu of a TOTP account has:
   - **Copy Code** puts the current code in the clipboard;
   - **Show** opens the account's window: the code in two groups of digits, a bar and the
     seconds until it changes, and a **Copy** button. The window stays over the windows of other
@@ -127,11 +127,9 @@ than the secret needs in the smallest font. After the user resizes it, it keeps 
 is closed, and masking the secret again does not change its size. A secret longer than 64
 characters is not shown at all: the window says so and offers **Copy** only.
 
-**Copy Secret** in the tray menu copies at once when the secret asks for no verification, or the
-verification it allows still counts. Otherwise it opens the secret window, which asks for Windows
-Hello and copies, since the prompt needs a window of the app to belong to; the secret stays masked.
-Copy Secret of an account whose window is open brings it to the front and copies again. A secret is
-never drawn on the screen unasked.
+The tray menu has no Copy Secret: a secret is copied in its window, or in its details, since the
+Windows Hello prompt needs a shown window of the app to belong to. A secret is never drawn on the
+screen unasked.
 
 ## Where the secrets are kept
 

@@ -182,7 +182,7 @@ internal static class Dialogs
     }
 
     /// <summary>Copies the secret of a secret account, telling when it could not; a cancelled copy says nothing.</summary>
-    public static async Task CopySecretAsync(AccountStore store, Account account, IWin32Window? owner)
+    public static async Task CopySecretAsync(AccountStore store, Account account, IWin32Window owner)
     {
         try
         {

@@ -11,11 +11,6 @@ namespace WindowsAuthenticator;
 /// secret is fitted to its width with a smaller font, and showing a secret widens the window to it until the user
 /// resizes it. The secret is dropped when it is masked and when the window closes.
 /// </summary>
-/// <remarks>
-/// This window intentionally differs from Mac Authenticator, where Copy Secret in the menu copies at once: when the
-/// secret asks for Windows Hello, Copy Secret in the tray menu copies here, since the Windows Hello prompt of a
-/// desktop app needs a shown and active window of the app as its owner, and the tray menu has none.
-/// </remarks>
 internal sealed class SecretWindow : Form
 {
     /// <summary>The secrets longer than this many characters are not shown in the window.</summary>
@@ -65,8 +60,7 @@ internal sealed class SecretWindow : Form
     private bool userResized;
     private Size resizeStart;
 
-    /// <param name="copyWhenShown">Whether the window copies the secret once it is shown, for Copy Secret.</param>
-    public SecretWindow(AccountStore store, Account account, bool copyWhenShown)
+    public SecretWindow(AccountStore store, Account account)
     {
         this.store = store;
         accountId = account.Id;
@@ -114,10 +108,6 @@ internal sealed class SecretWindow : Form
             store.Changed -= StoreChanged;
             Conceal();
         };
-        if (copyWhenShown)
-        {
-            Shown += async (_, _) => await CopyAsync();
-        }
         ClientSize = new Size(LogicalToDeviceUnits(MinWidth), ClientSize.Height);
         ShowState();
         FitHeight();
@@ -181,7 +171,7 @@ internal sealed class SecretWindow : Form
     }
 
     /// <summary>Copies the secret, after the verification its settings ask for; nothing happens when the user cancels.</summary>
-    public async Task CopyAsync()
+    private async Task CopyAsync()
     {
         if (busy)
         {
