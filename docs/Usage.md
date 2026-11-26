@@ -97,7 +97,9 @@ Each secret account has three settings, chosen when it is added and changed in i
 
 - **Ask to authenticate before it is shown or copied**, on unless it is unticked. When it is on,
   Reveal, Copy Secret and the secret window ask the user to verify with Windows Hello first, by
-  face, fingerprint or PIN; cancelling the prompt does nothing. When Windows Hello is not set up
+  face, fingerprint or PIN; cancelling the prompt does nothing. When Windows Hello matches a face
+  but does not confirm it, the prompt opens once more, and when that fails as well, the message
+  says to try again or to choose the PIN under More choices. When Windows Hello is not set up
   for the user, or is disabled by policy, the secret is not shown or copied, and the message says
   so; the setting can then be turned off. When it is off they act at once.
 - **Reauthenticate after (seconds)**, 0 by default, which applies while the secret asks. After the

@@ -302,10 +302,14 @@ or fetches from Vault. It needs Windows build 22000 and the target framework
 `net10.0-windows10.0.22000.0`, which makes Windows 11 the app's requirement. The call needs a
 shown and active window of the app as the owner of the prompt: the Settings window or the secret
 window. The tray menu, which has no window, has no Copy Secret, where Mac Authenticator has one: an
-invisible window of the app's own does not work as an owner, and a window opened from the menu to
-copy is not sure to come to the front, which Windows Hello needs to accept a face it has matched
-(`WINBIO_E_INVALID_TICKET`, 0x80098044). A secret is copied in its window or its details, which the
-user has brought to the front. Without
+invisible window of the app's own does not work as an owner, and a secret is copied in its window
+or its details, which the user has opened.
+
+The prompt sometimes fails after it matched the user's face, from the Settings window and the
+secret window alike, with `COMException` 0x80098044, `WINBIO_E_INVALID_TICKET`, which Microsoft
+does not document; reports of other apps that call Windows Hello show the same with the face and
+not with the PIN. The app cannot prevent it, so a prompt that fails with it is shown once more, and
+a second such failure says to try again or to choose the PIN. Without
 Windows Hello set up, or with it disabled by policy, the secret is refused with a message that says
 so, and is not shown without asking: the setting is the user's statement that the secret needs a
 check, and a fallback without one would void it.

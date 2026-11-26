@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.2 - 2026-11-26 12:28:54 +0100
+
+fix: a Windows Hello prompt that fails with 0x80098044 after it matched a face is shown once more.
+
+- When Windows Hello matches the user's face but fails with HRESULT 0x80098044, in the Settings
+  window or in a secret window, the prompt opens once more. When that fails as well, the message
+  says to try again or to choose the PIN under More choices, in place of the HRESULT.
+
 ## 0.6.1 - 2026-11-26 12:16:39 +0100
 
 fix: the tray menu of a secret has no Copy Secret, and a secret is copied in its window or its

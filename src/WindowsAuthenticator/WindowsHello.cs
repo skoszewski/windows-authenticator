@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Windows.Security.Credentials.UI;
 
 namespace WindowsAuthenticator;
@@ -6,13 +7,35 @@ namespace WindowsAuthenticator;
 internal static class WindowsHello
 {
     /// <summary>
+    /// <c>WINBIO_E_INVALID_TICKET</c>, which the prompt sometimes fails with after it matched the user's face; it is
+    /// not in the documented biometric error codes.
+    /// </summary>
+    private const int InvalidTicket = unchecked((int)0x80098044);
+
+    /// <summary>
     /// Shows the Windows Hello prompt with the message over the owner, a shown and active window of the app; true
-    /// when the user verified, false when the user cancelled. Every other outcome fails as
-    /// <see cref="StoreException"/> that says why.
+    /// when the user verified, false when the user cancelled. A prompt that fails with
+    /// <see cref="InvalidTicket"/> is shown once more. Every other outcome fails as <see cref="StoreException"/>
+    /// that says why.
     /// </summary>
     public static async Task<bool> VerifyAsync(IWin32Window owner, string message)
     {
-        var result = await UserConsentVerifierInterop.RequestVerificationForWindowAsync(owner.Handle, message);
+        UserConsentVerificationResult result;
+        try
+        {
+            result = await UserConsentVerifierInterop.RequestVerificationForWindowAsync(owner.Handle, message);
+        }
+        catch (COMException error) when (error.HResult == InvalidTicket)
+        {
+            try
+            {
+                result = await UserConsentVerifierInterop.RequestVerificationForWindowAsync(owner.Handle, message);
+            }
+            catch (COMException again) when (again.HResult == InvalidTicket)
+            {
+                throw new StoreException("Windows Hello did not confirm the verification; try again, or choose the PIN under More choices.");
+            }
+        }
         return result switch
         {
             UserConsentVerificationResult.Verified => true,
