@@ -6,15 +6,13 @@ namespace WindowsAuthenticator;
 internal static class WindowsHello
 {
     /// <summary>
-    /// Shows the Windows Hello prompt with the message over the owner, or over a window of its own when there is none,
-    /// such as for the tray menu; true when the user verified, false when the user cancelled. Every other outcome
-    /// fails as <see cref="StoreException"/> that says why.
+    /// Shows the Windows Hello prompt with the message over the owner, a shown and active window of the app; true
+    /// when the user verified, false when the user cancelled. Every other outcome fails as
+    /// <see cref="StoreException"/> that says why.
     /// </summary>
-    public static async Task<bool> VerifyAsync(IWin32Window? owner, string message)
+    public static async Task<bool> VerifyAsync(IWin32Window owner, string message)
     {
-        using var anchor = owner is null ? Anchor() : null;
-        var handle = owner?.Handle ?? anchor!.Handle;
-        var result = await UserConsentVerifierInterop.RequestVerificationForWindowAsync(handle, message);
+        var result = await UserConsentVerifierInterop.RequestVerificationForWindowAsync(owner.Handle, message);
         return result switch
         {
             UserConsentVerificationResult.Verified => true,
@@ -31,21 +29,5 @@ internal static class WindowsHello
                 throw new StoreException("Windows Hello was not verified after too many attempts; try again later."),
             _ => throw new StoreException("Windows Hello is not available; try again."),
         };
-    }
-
-    /// <summary>An invisible window in the foreground, for the prompt of a request that comes from no window.</summary>
-    private static Form Anchor()
-    {
-        var form = new Form
-        {
-            FormBorderStyle = FormBorderStyle.None,
-            ShowInTaskbar = false,
-            StartPosition = FormStartPosition.CenterScreen,
-            Size = new Size(1, 1),
-            Opacity = 0,
-        };
-        form.Show();
-        form.Activate();
-        return form;
     }
 }

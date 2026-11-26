@@ -278,9 +278,10 @@ An account is an OTP account or a secret account (`AccountKind`, OTP by default)
 has no algorithm, digits or period that anything reads, but it shares the id, the name, the
 unique-name rule, the menu order and the removal of the other accounts, so the menu, the Accounts
 tab and the stored order need no second list. Everything that computes or shows a code works on
-OTP accounts alone: a secret account has no window and its secret is never held for one, so a
-secret is never drawn on the screen unasked. It is copied, or revealed in the Settings window
-until the user hides it or selects another account.
+OTP accounts alone: a secret account is not a shown account, so the store never reads its secret for
+a code window, and a secret is never drawn on the screen unasked. It is copied, revealed in the
+Settings window, or shown in a window of its own that the user clicks to unmask (see the entry on
+the secret window).
 
 ## A secret account in Credential Manager has a target prefix of its own
 
@@ -298,20 +299,58 @@ Reveal and Copy Secret run `UserConsentVerifierInterop.RequestVerificationForWin
 desktop form of `UserConsentVerifier`, which takes a face, a fingerprint or the Windows Hello PIN,
 so a person at an unlocked computer cannot read a secret that the app holds in Credential Manager
 or fetches from Vault. It needs Windows build 22000 and the target framework
-`net10.0-windows10.0.22000.0`, which makes Windows 11 the app's requirement. The prompt is owned by
-the Settings window, or, for the tray menu, by an invisible window of its own, since the call
-needs the window of the active app. Without Windows Hello set up, or with it disabled by policy,
-the secret is refused with a message that says so, and is not shown without asking: the setting
-is the user's statement that the secret needs a check, and a fallback without one would void it.
+`net10.0-windows10.0.22000.0`, which makes Windows 11 the app's requirement. The call needs a
+shown and active window of the app as the owner of the prompt: the Settings window or the secret
+window. Copy Secret in the tray menu, which has no window, copies at once when no prompt is needed,
+and otherwise in the secret window, where Mac Authenticator copies from the menu; an invisible
+window of the app's own did not work as an owner, since the copy failed after the prompt, and the
+secret window gives the prompt an owner the user sees. Without
+Windows Hello set up, or with it disabled by policy, the secret is refused with a message that says
+so, and is not shown without asking: the setting is the user's statement that the secret needs a
+check, and a fallback without one would void it.
 
 Whether a secret asks is the account's own setting, since a password that guards little is a
-nuisance to verify for on every copy and a key that guards much is not: it is an attribute of the
-secret's credential, `Koszewscy_Authenticate` with `1` or `0`, and a value of the registry key of a
-Vault secret, and a secret without it asks, as every secret did before the setting existed. A
-cancelled prompt does nothing and shows no error. A revealed secret is hidden when the Settings
-window loses the keyboard or is hidden, since the window is kept and its page would show the
-secret again, and the clipboard copy of a secret is emptied when the app quits as well as after
-30 seconds.
+nuisance to verify for on every copy and a key that guards much is not, and so is the number of
+seconds after a verification during which it does not ask again, 0 asking every time. The time of
+the last verification is one for the app, not one for each secret, since a verification proves the
+user is there, and each secret decides how long that proof is good for. It is forgotten when the
+computer resumes (`SystemEvents.PowerModeChanged` with `PowerModes.Resume`) and on every
+`SystemEvents.SessionSwitch`, which Windows raises for a lock and an unlock of the screen, a sign-in
+and sign-out and a remote or console connection, so a lock forgets it, as macOS, which documents no
+lock notification, cannot. Both are static events, attached by the store and detached when the app
+is disposed, as their documentation asks. A cancelled prompt does nothing and shows no error. A
+revealed secret is hidden when the Settings window loses the keyboard or is hidden, since the window
+is kept and its page would show the secret again, and the clipboard copy of a secret is emptied when
+the app quits as well as after 30 seconds.
+
+The three settings of a secret, whether it asks, the seconds it stays verified and the seconds it
+stays shown, are one value, `SecretSettings`, stored as one text,
+`authenticate=1&seconds=60&hide=30`, in the attribute `Koszewscy_Authenticate` of a secret's
+credential, and as three DWORD values of the registry key of a Vault secret, `Authenticate`,
+`AuthenticateSeconds` and `HideSeconds`. A missing key or value takes its default, and the values
+`1` and `0` that earlier builds wrote in the attribute are read as `authenticate=1` and
+`authenticate=0`, so the earlier forms still read.
+
+## A secret window masks the secret and a countdown hides it again
+
+A secret account has a window over the others like a code window, for a secret that is read many
+times in a sitting. The secret is masked until the user clicks, since a window over other apps would
+otherwise show it to anyone looking; the click reads it, after the verification the secret's
+settings ask for, and a countdown masks it again after the secret's own number of seconds, or never
+for 0, which is for development and lab use where hiding is a nuisance. A click on the shown secret
+masks it at once. The secret is held by the window alone, not by the store, while it is shown, and
+masking it or closing the window drops it. Reveal in the Settings window follows the same hide
+time. The window keeps a shown secret when it loses the keyboard, as on macOS; only the Settings
+window, which is kept hidden, hides it then.
+
+A shown secret stays on one line, since a secret that wraps is hard to read and compare: the font
+shrinks to fit the width, down to 12 points, and the window cannot be made narrower than that needs;
+the width it opens with is the secret's on one line, up to 520 pixels at 96 DPI, and the user's own
+resizing is then left alone until the window is closed. Only showing a secret fits the window to it;
+masking it leaves the window as it is. A secret of more than 64 characters is not shown in the
+window, since even the smallest font would not keep it on one line in a window of a sensible width,
+and a secret that long is a key or a token that is copied, not read; the window offers Copy for it,
+and discards the text it read. Reveal in the Settings window has no such limit.
 
 ## A Vault secret is a reference to one field, and the KV version is the user's choice
 

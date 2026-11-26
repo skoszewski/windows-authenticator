@@ -32,12 +32,22 @@ internal static class Dialogs
 
     /// <summary>
     /// The text of an error: for a Vault problem what is wrong, what happened and what to do, and the message of
-    /// any other error.
+    /// any other error; a Windows error, such as a COM or Win32 one, also names its HRESULT, and an error without a
+    /// message its type.
     /// </summary>
-    public static string Describe(Exception error) =>
-        error is VaultException or IVaultProblemSource or System.Net.Sockets.SocketException or OperationCanceledException
-            ? VaultProblem.From(error).Report
-            : error.Message;
+    public static string Describe(Exception error)
+    {
+        if (error is VaultException or IVaultProblemSource or System.Net.Sockets.SocketException or OperationCanceledException)
+        {
+            return VaultProblem.From(error).Report;
+        }
+        var text = error.Message.Trim();
+        if (text.Length == 0)
+        {
+            return $"{error.GetType().FullName}, HRESULT 0x{error.HResult:X8}.";
+        }
+        return error is ExternalException ? $"{text} (HRESULT 0x{error.HResult:X8})" : text;
+    }
 
     /// <summary>
     /// The steps of a connection test or a setup, one line each with its outcome, and for a step that did not
@@ -172,7 +182,7 @@ internal static class Dialogs
     }
 
     /// <summary>Copies the secret of a secret account, telling when it could not; a cancelled copy says nothing.</summary>
-    public static async Task CopySecretAsync(AccountStore store, Account account, IWin32Window? owner = null)
+    public static async Task CopySecretAsync(AccountStore store, Account account, IWin32Window? owner)
     {
         try
         {

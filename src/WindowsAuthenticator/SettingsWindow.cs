@@ -40,7 +40,13 @@ internal sealed class SettingsWindow : Form
     private readonly List<(Button Button, bool WhileRevealed)> vaultActions = [];
 
     /// <summary>The secret shown on the page of its account until it is hidden or another account is selected.</summary>
-    private (Guid Account, string Value)? revealed;
+    private (Guid Account, string Value, DateTimeOffset? Until, int Total)? revealed;
+    private readonly System.Windows.Forms.Timer revealTimer = new() { Interval = 1000 };
+    private ProgressBar? revealBar;
+    private Label? revealLeft;
+
+    /// <summary>The name of the setting that had the keyboard before the page was built again, to give it back.</summary>
+    private string? focusAfterRebuild;
     private VaultEditor? editor;
     private bool refreshing;
     private bool quitting;
@@ -126,6 +132,7 @@ internal sealed class SettingsWindow : Form
         Controls.Add(statusBar);
         cancelActivity.Click += (_, _) => store.CancelActivity();
         activityTimer.Tick += (_, _) => ShowActivity();
+        revealTimer.Tick += (_, _) => ShowRevealLeft();
         store.ActivityChanged += (_, _) => ShowActivity();
         Deactivate += (_, _) => HideSecret();
         VisibleChanged += (_, _) =>
@@ -240,15 +247,37 @@ internal sealed class SettingsWindow : Form
         }
     }
 
-    /// <summary>Hides a revealed secret, when the window loses the keyboard or is hidden.</summary>
+    /// <summary>Hides a revealed secret, when the window loses the keyboard or is hidden, or its time is over.</summary>
     private void HideSecret()
     {
+        revealTimer.Enabled = false;
         if (revealed is null)
         {
             return;
         }
         revealed = null;
         ShowAccountDetails();
+    }
+
+    /// <summary>Shows the seconds left of the revealed secret, and hides it when they are over.</summary>
+    private void ShowRevealLeft()
+    {
+        if (revealed is not { Until: { } until, Total: > 0 } shown)
+        {
+            return;
+        }
+        var left = (int)Math.Ceiling((until - DateTimeOffset.Now).TotalSeconds);
+        if (left <= 0)
+        {
+            HideSecret();
+            return;
+        }
+        if (revealBar is not null && revealLeft is not null)
+        {
+            revealBar.Maximum = shown.Total;
+            revealBar.Value = Math.Min(left, shown.Total);
+            revealLeft.Text = $"{left}s";
+        }
     }
 
     /// <summary>A coloured dot showing the state of a vault.</summary>
@@ -409,7 +438,10 @@ internal sealed class SettingsWindow : Form
         if (revealed?.Account != account?.Id)
         {
             revealed = null;
+            revealTimer.Enabled = false;
         }
+        revealBar = null;
+        revealLeft = null;
         removeAccount.Enabled = account is not null;
         vaultActions.Clear();
         accountDetails.SuspendLayout();
@@ -486,18 +518,38 @@ internal sealed class SettingsWindow : Form
         if (account.Kind == AccountKind.Secret)
         {
             Heading("Secret");
+            var settings = account.Settings;
             var authenticate = new CheckBox
             {
+                Name = "authenticate",
                 Text = "Ask to authenticate before it is shown or copied",
-                Checked = account.RequiresAuthentication,
+                Checked = settings.RequiresAuthentication,
                 AutoSize = true,
             };
-            // The change is made after the event, since it rebuilds the page and the box with it.
-            authenticate.CheckedChanged += (_, _) => BeginInvoke(() =>
+            var seconds = new NumericUpDown
+            {
+                Name = "seconds",
+                Minimum = 0,
+                Maximum = SecretSettingsFields.MaxSeconds,
+                Value = settings.AuthenticationSeconds,
+                Enabled = settings.RequiresAuthentication,
+                Width = LogicalToDeviceUnits(80),
+            };
+            var hideAfter = new NumericUpDown
+            {
+                Name = "hide",
+                Minimum = 0,
+                Maximum = SecretSettingsFields.MaxSeconds,
+                Value = settings.HideSeconds,
+                Width = LogicalToDeviceUnits(80),
+            };
+            // The change is made after the event, since it rebuilds the page and the control with it.
+            void Change(Control changed) => BeginInvoke(() =>
             {
                 try
                 {
-                    store.SetRequiresAuthentication(account, authenticate.Checked);
+                    focusAfterRebuild = changed.Focused ? changed.Name : null;
+                    store.SetSecretSettings(account, new SecretSettings(authenticate.Checked, (int)seconds.Value, (int)hideAfter.Value));
                 }
                 catch (Exception error) when (error is StoreException || AccountStore.IsStorageFailure(error))
                 {
@@ -505,10 +557,29 @@ internal sealed class SettingsWindow : Form
                     ShowAccountDetails();
                 }
             });
+            authenticate.CheckedChanged += (_, _) => Change(authenticate);
+            seconds.ValueChanged += (_, _) => Change(seconds);
+            hideAfter.ValueChanged += (_, _) => Change(hideAfter);
             Wide(authenticate);
+            layout.Controls.Add(new Label { Text = "Reauthenticate after (seconds)", AutoSize = true, Anchor = AnchorStyles.Left });
+            layout.Controls.Add(seconds);
+            layout.Controls.Add(new Label { Text = "Hide after (seconds)", AutoSize = true, Anchor = AnchorStyles.Left });
+            layout.Controls.Add(hideAfter);
             if (revealed is { } shown)
             {
                 Wide(new TextBox { Text = shown.Value, ReadOnly = true, Font = fixedWidth, Dock = DockStyle.Fill });
+                if (shown.Total > 0)
+                {
+                    var countdown = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Dock = DockStyle.Fill };
+                    countdown.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                    countdown.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                    revealBar = new ProgressBar { Dock = DockStyle.Fill, Style = ProgressBarStyle.Continuous };
+                    revealLeft = new Label { AutoSize = true, Anchor = AnchorStyles.Right, MinimumSize = new Size(LogicalToDeviceUnits(40), 0) };
+                    countdown.Controls.Add(revealBar, 0, 0);
+                    countdown.Controls.Add(revealLeft, 1, 0);
+                    Wide(countdown);
+                    ShowRevealLeft();
+                }
             }
             var secretButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 0) };
             var reveal = new Button { Text = revealed is null ? "Reveal" : "Hide", AutoSize = true };
@@ -524,7 +595,9 @@ internal sealed class SettingsWindow : Form
                 {
                     if (await store.RevealSecretAsync(account, this) is { } value)
                     {
-                        revealed = (account.Id, value);
+                        var total = account.Settings.HideSeconds;
+                        revealed = (account.Id, value, total > 0 ? DateTimeOffset.Now.AddSeconds(total) : null, total);
+                        revealTimer.Enabled = total > 0;
                     }
                 }
                 catch (OperationCanceledException)
@@ -539,14 +612,22 @@ internal sealed class SettingsWindow : Form
             };
             var copySecret = new Button { Text = "Copy Secret", AutoSize = true, Enabled = !vaultBusy };
             copySecret.Click += async (_, _) => await Dialogs.CopySecretAsync(store, account, this);
+            var showSecret = new Button { Text = "Show Window", AutoSize = true };
+            showSecret.Click += (_, _) => showWindow(account);
             reveal.Enabled = !vaultBusy || revealed is not null;
             vaultActions.Add((reveal, revealed is not null));
             vaultActions.Add((copySecret, false));
             secretButtons.Controls.Add(reveal);
             secretButtons.Controls.Add(copySecret);
+            secretButtons.Controls.Add(showSecret);
             Wide(secretButtons);
             accountDetails.Controls.Add(layout);
             accountDetails.ResumeLayout();
+            if (focusAfterRebuild is { } focused && layout.Controls[focused] is { } setting)
+            {
+                setting.Focus();
+            }
+            focusAfterRebuild = null;
             return;
         }
         Heading("Code");
@@ -651,6 +732,7 @@ internal sealed class SettingsWindow : Form
             bold.Dispose();
             fixedWidth.Dispose();
             activityTimer.Dispose();
+            revealTimer.Dispose();
             checkImage.Dispose();
         }
         base.Dispose(disposing);

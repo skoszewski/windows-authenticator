@@ -1,3 +1,4 @@
+using Totp;
 using Vault;
 
 namespace WindowsAuthenticator;
@@ -14,18 +15,41 @@ internal sealed class SecretDialog : FieldsDialog
             UseSystemPasswordChar = true,
             PlaceholderText = "The password or key to keep",
         });
-        var authenticate = AddField("Authentication", AuthenticateBox());
+        var options = new SecretSettingsFields();
+        AddField("Authentication", options.Ask);
+        AddField("Reauthenticate after (seconds)", options.Seconds);
+        AddField("Hide after (seconds)", options.Hide);
         InitialFocus = name;
         Accepting = _ =>
         {
-            store.AddSecret(name.Text, secret.Text, authenticate.Checked);
+            store.AddSecret(name.Text, secret.Text, options.Settings);
             return Task.FromResult(true);
         };
     }
+}
 
-    /// <summary>The setting of a new secret account that asks for Windows Hello before its secret is shown or copied.</summary>
-    public static CheckBox AuthenticateBox() =>
-        new() { Text = "Ask to authenticate before it is shown or copied", Checked = true, AutoSize = true };
+/// <summary>
+/// The fields of a new secret's settings: whether it asks for Windows Hello, the seconds after a verification
+/// during which it does not ask again, enabled only while it asks, and the seconds after which a shown secret is
+/// hidden again.
+/// </summary>
+internal sealed class SecretSettingsFields
+{
+    /// <summary>The longest time a number field takes, a day.</summary>
+    public const int MaxSeconds = 86400;
+
+    public SecretSettingsFields()
+    {
+        Ask.CheckedChanged += (_, _) => Seconds.Enabled = Ask.Checked;
+    }
+
+    public CheckBox Ask { get; } = new() { Text = "Ask to authenticate before it is shown or copied", Checked = true, AutoSize = true };
+
+    public NumericUpDown Seconds { get; } = new() { Minimum = 0, Maximum = MaxSeconds, Value = 0 };
+
+    public NumericUpDown Hide { get; } = new() { Minimum = 0, Maximum = MaxSeconds, Value = SecretSettings.DefaultHideSeconds };
+
+    public SecretSettings Settings => new(Ask.Checked, (int)Seconds.Value, (int)Hide.Value);
 }
 
 /// <summary>
@@ -61,7 +85,10 @@ internal sealed class VaultSecretDialog : VaultFieldsDialog
             ? AddField("Secret value", new TextBox { UseSystemPasswordChar = true, PlaceholderText = "The password or key to keep" })
             : null;
         var name = AddField("Account name", new TextBox { PlaceholderText = "Empty to use the secret name and the field" });
-        var authenticate = AddField("Authentication", SecretDialog.AuthenticateBox());
+        var options = new SecretSettingsFields();
+        AddField("Authentication", options.Ask);
+        AddField("Reauthenticate after (seconds)", options.Seconds);
+        AddField("Hide after (seconds)", options.Hide);
         version.SelectedIndexChanged += (_, _) => VaultChanged(Session);
         mount.Leave += (_, _) => VaultChanged(Session);
         Shown += (_, _) => VaultChanged(Session);
@@ -122,7 +149,7 @@ internal sealed class VaultSecretDialog : VaultFieldsDialog
             // A failure to add the account is reported, and the secret is not written again.
             try
             {
-                store.AddVaultSecret(accountName, reference, session.Profile.Id, authenticate.Checked);
+                store.AddVaultSecret(accountName, reference, session.Profile.Id, options.Settings);
             }
             catch (Exception error) when (error is StoreException || AccountStore.IsStorageFailure(error))
             {

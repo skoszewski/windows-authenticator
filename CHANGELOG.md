@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0 - 2026-11-26 11:38:39 +0100
+
+feature: a secret has a window that masks it until clicked and hides it again after a countdown, it
+asks to authenticate again after a number of seconds, and after the computer resumes or the session
+switches, and Copy Secret in the tray menu copies after Windows Hello.
+
+- **Show** in the tray submenu of a secret and **Show Window** in its details open a small window
+  over the others that shows the secret masked. A click reads it, after the verification the secret
+  asks for, and shows it with a bar and the seconds left, in the size of the code window's font;
+  then it is masked again. A click on the shown secret masks it at once. The window has a Copy
+  button and a line that says what happened, or why the secret is not shown.
+- The window can be resized and keeps the secret on one line: it opens as wide as the secret needs,
+  up to a maximum, a longer secret being shown in a smaller font, and it cannot be made narrower
+  than the smallest font needs; once the user resizes it, it keeps that size until it is closed, and
+  masking the secret again does not resize it. A secret of more than 64 characters is not shown in
+  the window, which offers Copy only. Closing the window drops the secret.
+- The Hide after setting, in seconds, is per secret, 30 by default; 0 never hides the secret and
+  shows a Hide button. It is set when the secret is added and changed in its details, and Reveal in
+  the details follows it with a bar and the seconds left.
+- A secret that asks to authenticate has a Reauthenticate after setting, in seconds, 0 by default:
+  after the user verifies with Windows Hello, the secret is shown or copied without asking again
+  until that many seconds have passed. It is set when the secret is added and changed in its
+  details.
+- The verification is forgotten when the computer resumes and when the session switches, a lock and
+  an unlock of the screen included, so that the next secret asks again.
+- Copy Secret in the tray menu copies at once when the secret asks for no verification; otherwise it
+  opens the secret's window, which asks for Windows Hello and copies. It failed after a successful
+  prompt, when no window of the app owned it.
+- An error that comes with no message names its type and HRESULT, and a Windows error, such as a COM
+  or a Win32 error, its HRESULT after the message.
+
 ## 0.5.1 - 2026-11-26 08:46:39 +0100
 
 fix: only Sign Out or removing a vault deletes its OIDC token, a secret can ask for Windows Hello

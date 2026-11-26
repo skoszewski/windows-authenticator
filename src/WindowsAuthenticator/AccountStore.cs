@@ -1,5 +1,6 @@
 using System.Security;
 using System.Text;
+using Microsoft.Win32;
 using Totp;
 using Vault;
 
@@ -28,7 +29,7 @@ internal sealed record Notice(string Text, DateTimeOffset Until);
 /// sessions, and the secrets and Vault codes of the OTP accounts whose codes are shown. A secret account is never
 /// shown; its secret is read when it is revealed or copied, and kept nowhere.
 /// </summary>
-internal sealed class AccountStore
+internal sealed class AccountStore : IDisposable
 {
     /// <summary>The secrets of the accounts whose code windows are open, and of no other.</summary>
     private readonly Dictionary<Guid, string> secrets = [];
@@ -49,9 +50,34 @@ internal sealed class AccountStore
     private List<VaultRecord> vaultRecords = [];
     private List<VaultSession> vaults = [];
 
+    /// <summary>
+    /// When the user last verified with Windows Hello; forgotten when the computer resumes and when the session
+    /// switches, locked or unlocked included, so that the next secret asks again.
+    /// </summary>
+    private DateTimeOffset? lastAuthentication;
+
     public AccountStore()
     {
         Reload();
+        SystemEvents.PowerModeChanged += ForgetOnResume;
+        SystemEvents.SessionSwitch += ForgetOnSessionSwitch;
+    }
+
+    private void ForgetOnResume(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume)
+        {
+            lastAuthentication = null;
+        }
+    }
+
+    private void ForgetOnSessionSwitch(object? sender, SessionSwitchEventArgs e) => lastAuthentication = null;
+
+    /// <summary>Detaches the handlers of the system's static events.</summary>
+    public void Dispose()
+    {
+        SystemEvents.PowerModeChanged -= ForgetOnResume;
+        SystemEvents.SessionSwitch -= ForgetOnSessionSwitch;
     }
 
     /// <summary>Raised when the accounts, the vaults, a vault's state or the load error change.</summary>
@@ -140,8 +166,7 @@ internal sealed class AccountStore
             {
                 if (record.IsSecret)
                 {
-                    listed.Add(new ListedAccount(Account.Secret(record.Id, record.Name, record.Authenticate ?? true),
-                                                 record.Added));
+                    listed.Add(new ListedAccount(Account.Secret(record.Id, record.Name, record.SecretSettings), record.Added));
                     if (record.Reference is { } reference)
                     {
                         vaultSecrets[record.Id] = new VaultSecret(record.Profile, reference);
@@ -204,7 +229,7 @@ internal sealed class AccountStore
     }
 
     /// <summary>Adds a secret account whose secret is kept in Credential Manager.</summary>
-    public void AddSecret(string name, string value, bool requiresAuthentication)
+    public void AddSecret(string name, string value, SecretSettings settings)
     {
         name = name.Trim();
         if (name.Length == 0)
@@ -220,15 +245,15 @@ internal sealed class AccountStore
             throw new StoreException($"The secret is longer than Credential Manager keeps, {CredentialStore.MaxBlobSize} bytes.");
         }
         CheckCanAdd(name);
-        var account = Account.Secret(Guid.NewGuid(), name, requiresAuthentication);
-        CredentialStore.AddSecret(account.Id, name, value, requiresAuthentication);
+        var account = Account.Secret(Guid.NewGuid(), name, settings);
+        CredentialStore.AddSecret(account.Id, name, value, settings);
         Accounts = [.. Accounts, account];
         SaveOrder();
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Adds a secret account read from a field of a KV secret of the Vault profile; nothing secret is kept for it.</summary>
-    public void AddVaultSecret(string name, SecretReference reference, Guid profile, bool requiresAuthentication)
+    public void AddVaultSecret(string name, SecretReference reference, Guid profile, SecretSettings settings)
     {
         name = name.Trim();
         if (name.Length == 0)
@@ -236,9 +261,9 @@ internal sealed class AccountStore
             throw new StoreException("Give the account a name.");
         }
         CheckCanAdd(name);
-        var account = Account.Secret(Guid.NewGuid(), name, requiresAuthentication);
+        var account = Account.Secret(Guid.NewGuid(), name, settings);
         var record = new VaultRecord(account.Id, profile, name, null, "", "", DateTime.UtcNow, IsSecret: true, reference,
-                                     requiresAuthentication);
+                                     settings);
         Settings.SaveVaultAccount(record);
         vaultRecords.Add(record);
         vaultSecrets[account.Id] = new VaultSecret(profile, reference);
@@ -449,31 +474,55 @@ internal sealed class AccountStore
                                              (client, cancel) => client.ReadSecretAsync(vaultSecret.Reference, cancel));
     }
 
-    /// <summary>Sets whether showing or copying a secret account's secret asks the user to authenticate.</summary>
-    public void SetRequiresAuthentication(Account account, bool required)
+    /// <summary>Sets how a secret account's secret is protected and shown.</summary>
+    public void SetSecretSettings(Account account, SecretSettings settings)
     {
         EnsureLoaded();
         if (vaultRecords.FindIndex(r => r.Id == account.Id) is var index and >= 0)
         {
-            var record = vaultRecords[index] with { Authenticate = required };
+            var record = vaultRecords[index] with { SecretSettings = settings };
             Settings.SaveVaultAccount(record);
             vaultRecords[index] = record;
         }
         else
         {
-            CredentialStore.SetSecretAuthentication(account.Id, account.Name, required);
+            CredentialStore.SetSecretSettings(account.Id, account.Name, settings);
         }
-        Accounts = [.. Accounts.Select(a => a.Id == account.Id ? a with { RequiresAuthentication = required } : a)];
+        Accounts = [.. Accounts.Select(a => a.Id == account.Id ? a with { Settings = settings } : a)];
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
-    /// The text of a secret account, for the user to look at, after the user verifies with Windows Hello when the
-    /// account asks for it; null when the user cancels. Nothing is kept of it.
+    /// Whether the user must verify to see or copy the secret: the account asks, and the user has not verified
+    /// within the seconds it allows.
     /// </summary>
-    public async Task<string?> RevealSecretAsync(Account account, IWin32Window? owner)
+    public bool NeedsAuthentication(Account account) =>
+        account.Settings.RequiresAuthentication
+        && !(account.Settings.AuthenticationSeconds > 0 && lastAuthentication is { } last
+             && DateTimeOffset.Now - last < TimeSpan.FromSeconds(account.Settings.AuthenticationSeconds));
+
+    /// <summary>Asks for Windows Hello when the account needs it; false when the user cancels. A success is remembered.</summary>
+    private async Task<bool> AuthenticatedAsync(Account account, IWin32Window owner, string message)
     {
-        if (account.RequiresAuthentication && !await WindowsHello.VerifyAsync(owner, $"Show the secret {account.Name}"))
+        if (!NeedsAuthentication(account))
+        {
+            return true;
+        }
+        if (!await WindowsHello.VerifyAsync(owner, message))
+        {
+            return false;
+        }
+        lastAuthentication = DateTimeOffset.Now;
+        return true;
+    }
+
+    /// <summary>
+    /// The text of a secret account, for the user to look at, after the user verifies with Windows Hello when the
+    /// account needs it; null when the user cancels. Nothing is kept of it.
+    /// </summary>
+    public async Task<string?> RevealSecretAsync(Account account, IWin32Window owner)
+    {
+        if (!await AuthenticatedAsync(account, owner, $"Show the secret {account.Name}"))
         {
             return null;
         }
@@ -482,16 +531,31 @@ internal sealed class AccountStore
 
     /// <summary>
     /// Puts the text of a secret account in the clipboard, after the user verifies with Windows Hello when the
-    /// account asks for it, kept out of the clipboard history, and empties the clipboard after 30 seconds, or when
-    /// the app quits, if it still holds that copy. Nothing is copied when the user cancels.
+    /// account needs it, kept out of the clipboard history, and empties the clipboard after 30 seconds, or when
+    /// the app quits, if it still holds that copy; false when the user cancels, and nothing is copied. Without an
+    /// owner the account must need no verification.
     /// </summary>
-    public async Task CopySecretAsync(Account account, IWin32Window? owner)
+    public async Task<bool> CopySecretAsync(Account account, IWin32Window? owner)
     {
-        if (account.RequiresAuthentication && !await WindowsHello.VerifyAsync(owner, $"Copy the secret {account.Name}"))
+        if (NeedsAuthentication(account))
         {
-            return;
+            if (owner is null)
+            {
+                throw new InvalidOperationException("A secret that asks to authenticate is copied from a window.");
+            }
+            if (!await AuthenticatedAsync(account, owner, $"Copy the secret {account.Name}"))
+            {
+                return false;
+            }
         }
-        await ConcealedClipboard.CopyAsync(await SecretValueAsync(account));
+        await CopySecretValueAsync(account, await SecretValueAsync(account));
+        return true;
+    }
+
+    /// <summary>Puts a secret read for the account in the clipboard, and tells what was copied.</summary>
+    private async Task CopySecretValueAsync(Account account, string value)
+    {
+        await ConcealedClipboard.CopyAsync(value);
         ShowNotice($"Copied the secret {account.Name}");
     }
 

@@ -5,8 +5,8 @@ namespace WindowsAuthenticator;
 
 /// <summary>
 /// The app: its icon in the notification area, whose badge shows a vault call that runs, a copy just made, or a
-/// vault with a problem, and whose menu lists the accounts and the vaults with a problem, the code windows and the
-/// Settings window. The menu holds no codes; the open code windows are refreshed at each
+/// vault with a problem, and whose menu lists the accounts and the vaults with a problem, the code windows, the
+/// secret windows and the Settings window. The menu holds no codes; the open code windows are refreshed at each
 /// whole second, which also fetches the codes of Vault accounts.
 /// </summary>
 internal sealed class TrayContext : ApplicationContext
@@ -23,6 +23,7 @@ internal sealed class TrayContext : ApplicationContext
     private readonly Icon copiedIcon;
     private readonly Bitmap warningImage;
     private readonly Dictionary<Guid, CodeWindow> windows = [];
+    private readonly Dictionary<Guid, SecretWindow> secretWindows = [];
     private readonly System.Windows.Forms.Timer timer = new();
     private readonly SettingsWindow settings;
     private Guid? balloonVault;
@@ -104,7 +105,8 @@ internal sealed class TrayContext : ApplicationContext
                 var submenu = new ToolStripMenuItem(Escaped(account.Name));
                 if (account.Kind == AccountKind.Secret)
                 {
-                    submenu.DropDownItems.Add("Copy Secret", null, async (_, _) => await Dialogs.CopySecretAsync(store, account));
+                    submenu.DropDownItems.Add("Copy Secret", null, async (_, _) => await CopySecretAsync(account));
+                    submenu.DropDownItems.Add("Show", null, async (_, _) => await ShowSecretAsync(account, copy: false));
                 }
                 else
                 {
@@ -179,9 +181,58 @@ internal sealed class TrayContext : ApplicationContext
         }
     }
 
-    /// <summary>Brings the account's code window to the front, making it if it is not open.</summary>
+    /// <summary>
+    /// Copies the secret at once when it needs no verification, and otherwise in the account's secret window, which
+    /// owns the Windows Hello prompt.
+    /// </summary>
+    private async Task CopySecretAsync(Account account)
+    {
+        // Unlike Mac Authenticator, a copy that asks for Windows Hello runs in a window, which owns its prompt.
+        if (store.NeedsAuthentication(account))
+        {
+            await ShowSecretAsync(account, copy: true);
+            return;
+        }
+        await Dialogs.CopySecretAsync(store, account, null);
+    }
+
+    /// <summary>
+    /// Brings the account's secret window to the front, making it if it is not open, and copies the secret in it
+    /// when asked: an open window copies at once, and a new one once it is shown.
+    /// </summary>
+    private async Task ShowSecretAsync(Account account, bool copy)
+    {
+        if (secretWindows.TryGetValue(account.Id, out var open))
+        {
+            open.Activate();
+            if (copy)
+            {
+                await open.CopyAsync();
+            }
+            return;
+        }
+        var window = new SecretWindow(store, account, copyWhenShown: copy);
+        window.FormClosed += (_, _) =>
+        {
+            secretWindows.Remove(account.Id);
+            window.Dispose();
+        };
+        secretWindows[account.Id] = window;
+        window.Show();
+        window.Activate();
+    }
+
+    /// <summary>
+    /// Brings the account's code window, or for a secret account its secret window, to the front, making it if it is
+    /// not open.
+    /// </summary>
     private void Show(Account account)
     {
+        if (account.Kind == AccountKind.Secret)
+        {
+            _ = ShowSecretAsync(account, copy: false);
+            return;
+        }
         if (windows.TryGetValue(account.Id, out var open))
         {
             open.TopMost = true;
@@ -200,11 +251,15 @@ internal sealed class TrayContext : ApplicationContext
         window.Show();
     }
 
-    /// <summary>Closes the windows of accounts no longer registered.</summary>
+    /// <summary>Closes the code and secret windows of accounts no longer registered.</summary>
     private void CloseRemovedWindows()
     {
         var ids = store.Accounts.Select(a => a.Id).ToHashSet();
         foreach (var window in windows.Values.Where(w => !ids.Contains(w.AccountId)).ToList())
+        {
+            window.Close();
+        }
+        foreach (var window in secretWindows.Values.Where(w => !ids.Contains(w.AccountId)).ToList())
         {
             window.Close();
         }
@@ -226,6 +281,10 @@ internal sealed class TrayContext : ApplicationContext
     {
         timer.Stop();
         foreach (var window in windows.Values.ToList())
+        {
+            window.Close();
+        }
+        foreach (var window in secretWindows.Values.ToList())
         {
             window.Close();
         }
@@ -252,6 +311,7 @@ internal sealed class TrayContext : ApplicationContext
             warningImage.Dispose();
             settings.Dispose();
             menu.Dispose();
+            store.Dispose();
         }
         base.Dispose(disposing);
     }

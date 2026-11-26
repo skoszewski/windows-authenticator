@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.Win32;
+using Totp;
 using Vault;
 
 namespace WindowsAuthenticator;
@@ -10,12 +11,11 @@ internal sealed record VaultProfile(Guid Id, string Name, VaultConfiguration Con
 /// <summary>
 /// An account kept in Vault: for an OTP account the parameters, the profile and the name of the key Vault makes
 /// its codes from; for a secret account the profile, the reference of the KV field, which is null when the stored
-/// record lacks a part of it, and whether it asks to authenticate, null when the record does not say, with the
-/// parameters and the key empty.
+/// record lacks a part of it, and its settings, with the parameters and the key empty.
 /// </summary>
 internal sealed record VaultRecord(Guid Id, Guid Profile, string Name, string? Issuer, string Parameters, string Key,
                                    DateTime Added, bool IsSecret = false, SecretReference? Reference = null,
-                                   bool? Authenticate = null);
+                                   SecretSettings? SecretSettings = null);
 
 /// <summary>
 /// The app's settings in the current user's registry: the menu order of the accounts, the Vault profiles and
@@ -156,9 +156,13 @@ internal static class Settings
                                     && Text(key, "KvField") is { } field
                         ? new SecretReference(version, mount, secret, field)
                         : null;
-                    var authenticate = key.GetValue("Authenticate") is int flag ? flag != 0 : (bool?)null;
+                    // A value left out takes its default.
+                    var settings = new SecretSettings(
+                        key.GetValue("Authenticate") is not int flag || flag != 0,
+                        key.GetValue("AuthenticateSeconds") is int seconds ? seconds : 0,
+                        key.GetValue("HideSeconds") is int hide ? hide : SecretSettings.DefaultHideSeconds);
                     records.Add(new VaultRecord(id, profile, name, null, "", "", Time(key, "Added"), IsSecret: true,
-                                                reference, authenticate));
+                                                reference, settings));
                 }
                 else if (Text(key, "Parameters") is { } parameters && Text(key, "Key") is { } vaultKey)
                 {
@@ -184,13 +188,17 @@ internal static class Settings
         SetText(key, "KvMount", record.Reference?.Mount);
         SetText(key, "KvName", record.Reference?.Name);
         SetText(key, "KvField", record.Reference?.Field);
-        if (record.Authenticate is { } authenticate)
+        if (record.SecretSettings is { } settings)
         {
-            key.SetValue("Authenticate", authenticate ? 1 : 0, RegistryValueKind.DWord);
+            key.SetValue("Authenticate", settings.RequiresAuthentication ? 1 : 0, RegistryValueKind.DWord);
+            key.SetValue("AuthenticateSeconds", settings.AuthenticationSeconds, RegistryValueKind.DWord);
+            key.SetValue("HideSeconds", settings.HideSeconds, RegistryValueKind.DWord);
         }
         else
         {
             key.DeleteValue("Authenticate", throwOnMissingValue: false);
+            key.DeleteValue("AuthenticateSeconds", throwOnMissingValue: false);
+            key.DeleteValue("HideSeconds", throwOnMissingValue: false);
         }
     }
 

@@ -32,7 +32,10 @@ internal static unsafe class CredentialStore
 
     private const string ParametersKeyword = "Koszewscy_Parameters";
 
-    /// <summary>The attribute of a secret account that says whether it asks to authenticate, 1 or 0; absent means 1.</summary>
+    /// <summary>
+    /// The attribute of a secret account that holds its settings as <see cref="SecretSettings.Text"/>; the values 1
+    /// and 0 of earlier builds say whether it asks to authenticate, and absent means the defaults.
+    /// </summary>
     private const string AuthenticateKeyword = "Koszewscy_Authenticate";
     private const string VaultDescription = "Windows Authenticator Vault credential";
     private const string VaultTokenDescription = "Windows Authenticator Vault token";
@@ -298,16 +301,17 @@ internal static unsafe class CredentialStore
                 {
                     var written = DateTime.FromFileTimeUtc(
                         ((long)credential->LastWritten.dwHighDateTime << 32) | (uint)credential->LastWritten.dwLowDateTime);
-                    var asks = true;
+                    var settings = new SecretSettings();
                     for (var j = 0; j < credential->AttributeCount; j++)
                     {
                         var attribute = credential->Attributes[j];
                         if (new string(attribute.Keyword) == AuthenticateKeyword)
                         {
-                            asks = Encoding.Unicode.GetString(attribute.Value, (int)attribute.ValueSize) != "0";
+                            var text = Encoding.Unicode.GetString(attribute.Value, (int)attribute.ValueSize);
+                            settings = SecretSettings.FromText(text is "0" or "1" ? $"authenticate={text}" : text) ?? settings;
                         }
                     }
-                    listed.Add(new ListedAccount(Account.Secret(id, new string(credential->UserName), asks), written));
+                    listed.Add(new ListedAccount(Account.Secret(id, new string(credential->UserName), settings), written));
                 }
             }
             return listed;
@@ -322,14 +326,13 @@ internal static unsafe class CredentialStore
     public static string SecretValue(Guid id) =>
         ReadBlob(SecretTargetName(id), "read the secret") ?? throw new CredentialStoreException("read the secret", ErrorNotFound);
 
-    /// <summary>Writes the secret account's credential, named after the account, with whether it asks to authenticate.</summary>
-    public static void AddSecret(Guid id, string name, string value, bool requiresAuthentication) =>
-        Write(SecretTargetName(id), name, SecretDescription, value, (AuthenticateKeyword, requiresAuthentication ? "1" : "0"),
-              "add the secret");
+    /// <summary>Writes the secret account's credential, named after the account, with its settings.</summary>
+    public static void AddSecret(Guid id, string name, string value, SecretSettings settings) =>
+        Write(SecretTargetName(id), name, SecretDescription, value, (AuthenticateKeyword, settings.Text), "add the secret");
 
-    /// <summary>Writes the secret account's credential again with its secret, setting whether it asks to authenticate.</summary>
-    public static void SetSecretAuthentication(Guid id, string name, bool required) =>
-        Write(SecretTargetName(id), name, SecretDescription, SecretValue(id), (AuthenticateKeyword, required ? "1" : "0"),
+    /// <summary>Writes the secret account's credential again with its secret and the new settings.</summary>
+    public static void SetSecretSettings(Guid id, string name, SecretSettings settings) =>
+        Write(SecretTargetName(id), name, SecretDescription, SecretValue(id), (AuthenticateKeyword, settings.Text),
               "change the secret");
 
     /// <summary>Deletes the secret account's credential; one already gone is no failure.</summary>

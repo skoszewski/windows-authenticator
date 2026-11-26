@@ -13,8 +13,8 @@ The menu opens with a right click on the icon:
 
 - a line `Vault <name>: <what is wrong>` for each vault whose last call failed; choosing it opens
   Settings on that vault;
-- one submenu for each account, named after it; a secret account's submenu has **Copy Secret**,
-  described under Secret accounts. The submenu of a TOTP account has:
+- one submenu for each account, named after it; a secret account's submenu has **Copy Secret**
+  and **Show**, described under Secret accounts. The submenu of a TOTP account has:
   - **Copy Code** puts the current code in the clipboard;
   - **Show** opens the account's window: the code in two groups of digits, a bar and the
     seconds until it changes, and a **Copy** button. The window stays over the windows of other
@@ -85,22 +85,53 @@ with the other accounts, as Secret, and keeps its place in their order.
 the secret in Credential Manager, which holds at most 2560 bytes of it. For a secret account the
 details show, in place of a code:
 
-- **Reveal**, which shows the secret until **Hide** is chosen, another account is selected, or the
-  Settings window loses the keyboard or is closed;
+- **Reveal**, which shows the secret until its hide time is over, **Hide** is chosen, another
+  account is selected, or the Settings window loses the keyboard or is closed;
+- **Show Window**, which opens the secret window described below;
 - **Copy Secret**, which puts the secret in the clipboard with the formats that keep it out of the
   clipboard history and the cloud clipboard (`ExcludeClipboardContentFromMonitorProcessing`,
   `CanIncludeInClipboardHistory` and `CanUploadToCloudClipboard`), and empties the clipboard after
   30 seconds, or when the app quits, if it still holds that copy.
 
-Each secret account has a setting, **Ask to authenticate before it is shown or copied**, which is
-on when the account is added unless it is unticked in the dialog, and can be changed in the
-details. When it is on, Reveal and Copy Secret, and Copy Secret in the menu, ask the user to verify
-with Windows Hello first, by face, fingerprint or PIN; cancelling the prompt does nothing. When
-Windows Hello is not set up for the user, or is disabled by policy, the secret is not shown or
-copied, and the message says so; the setting can then be turned off. When it is off they act at
-once. An account without the setting, such as one kept by an earlier build, asks.
+Each secret account has three settings, chosen when it is added and changed in its details:
 
-A secret account has no window, so a secret is never drawn on the screen unasked.
+- **Ask to authenticate before it is shown or copied**, on unless it is unticked. When it is on,
+  Reveal, Copy Secret and the secret window ask the user to verify with Windows Hello first, by
+  face, fingerprint or PIN; cancelling the prompt does nothing. When Windows Hello is not set up
+  for the user, or is disabled by policy, the secret is not shown or copied, and the message says
+  so; the setting can then be turned off. When it is off they act at once.
+- **Reauthenticate after (seconds)**, 0 by default, which applies while the secret asks. After the
+  user verifies, a secret whose number is above 0 is shown or copied without asking again until that
+  many seconds have passed since the verification; with 0 it asks every time. A verification counts
+  for every secret that allows the time since it, and it is forgotten, so that every secret asks
+  again, when the computer resumes from sleep or hibernation, and when the session switches: when
+  the screen is locked or unlocked, the user signs in or out, or a remote session connects or
+  disconnects.
+- **Hide after (seconds)**, the time a shown secret stays shown, 30 by default; 0 never hides it,
+  for development and lab use. It applies to Reveal in the details, which shows a bar and the
+  seconds left, and to the secret window.
+
+An account without the settings, such as one kept by an earlier build, asks every time and hides
+after 30 seconds.
+
+**Show**, in the secret's tray submenu, and **Show Window**, in its details, open the secret window,
+a small window over the others, named after the account, like a code window. The secret is masked
+as `********`, and a click on it reads the secret, after the verification its settings ask for, and
+shows it with a bar and the seconds left, in the font size of a code; when the time ends, or the
+shown secret is clicked, or the window is closed, the secret is masked again and dropped. With a
+hide time of 0 the bar is replaced by a **Hide** button. **Copy** copies the secret as Copy Secret
+does, and a line says what happened, or why the secret is not shown. The secret is kept on one
+line: the window opens as wide as the secret needs, up to a maximum width, and a secret that does
+not fit is shown in a smaller font; the window can be resized, and it refuses to become narrower
+than the secret needs in the smallest font. After the user resizes it, it keeps that size until it
+is closed, and masking the secret again does not change its size. A secret longer than 64
+characters is not shown at all: the window says so and offers **Copy** only.
+
+**Copy Secret** in the tray menu copies at once when the secret asks for no verification, or the
+verification it allows still counts. Otherwise it opens the secret window, which asks for Windows
+Hello and copies, since the prompt needs a window of the app to belong to; the secret stays masked.
+Copy Secret of an account whose window is open brings it to the front and copies again. A secret is
+never drawn on the screen unasked.
 
 ## Where the secrets are kept
 
@@ -112,5 +143,6 @@ Windows user can read these entries.
 A secret account kept in Credential Manager is the generic credential
 `pl.waw.koszewscy.WindowsAuthenticator.secret:<id>`, of a target prefix of its own so that a build
 that knows no secret accounts does not read a password as a TOTP secret: its blob is the secret, its
-user name the account's name, and its attribute `Koszewscy_Authenticate`, `1` or `0`, its setting.
+user name the account's name, and its attribute `Koszewscy_Authenticate` its settings, as
+`authenticate=1&seconds=60&hide=30`.
 A secret is read when it is revealed or copied, and kept nowhere.
