@@ -35,7 +35,7 @@ internal static class Dialogs
     /// any other error.
     /// </summary>
     public static string Describe(Exception error) =>
-        error is VaultException or IVaultProblemSource or System.Net.Sockets.SocketException
+        error is VaultException or IVaultProblemSource or System.Net.Sockets.SocketException or OperationCanceledException
             ? VaultProblem.From(error).Report
             : error.Message;
 
@@ -171,12 +171,16 @@ internal static class Dialogs
         dialog.ShowDialog(owner);
     }
 
-    /// <summary>Copies the secret of a secret account, telling when it could not.</summary>
+    /// <summary>Copies the secret of a secret account, telling when it could not; a cancelled copy says nothing.</summary>
     public static async Task CopySecretAsync(AccountStore store, Account account, IWin32Window? owner = null)
     {
         try
         {
-            await store.CopySecretAsync(account);
+            await store.CopySecretAsync(account, owner);
+        }
+        catch (OperationCanceledException)
+        {
+            // The user cancelled the request.
         }
         catch (Exception error)
         {
@@ -258,35 +262,47 @@ internal static class Dialogs
     }
 
     /// <summary>Adds the account the vault key stores to the app; an empty name is the key's suggested name.</summary>
-    public static async Task AddVaultAccountAsync(AccountStore store, VaultSession session, string key, string name)
+    public static async Task AddVaultAccountAsync(AccountStore store, VaultSession session, string key, string name,
+                                                  CancellationToken cancellationToken = default)
     {
-        var info = await session.AuthorizedAsync(client => client.ReadKeyAsync(key));
+        var info = await session.AuthorizedAsync("Reading the key", (client, cancel) => client.ReadKeyAsync(key, cancel),
+                                                 cancellationToken: cancellationToken);
         store.AddVaultAccount(info.Account(name.Length == 0 ? info.SuggestedName : name), key, session.Profile.Id);
     }
 
-    /// <summary>Lists the keys of each vault, as far as their policies allow, and asks for the key of a new account.</summary>
-    public static async Task AddFromVaultAsync(AccountStore store, IWin32Window? owner = null)
+    /// <summary>Asks for a vault and the key of a new account; the keys of the vault are listed in the dialog.</summary>
+    public static void AddFromVault(AccountStore store, IWin32Window? owner = null)
     {
         if (Vaults(store, owner) is not { } sessions)
         {
             return;
         }
-        var keys = new Dictionary<Guid, IReadOnlyList<string>>();
-        var notes = new List<string>();
-        foreach (var session in sessions)
-        {
-            try
-            {
-                keys[session.Profile.Id] = await session.AuthorizedAsync(client => client.ListKeysAsync());
-            }
-            catch (Exception error)
-            {
-                notes.Add($"{session.Profile.Name}: {VaultProblem.From(error).Title}.");
-            }
-        }
-        var note = notes.Count == 0 ? "" : " The keys could not be listed: " + string.Join(" ", notes);
-        using var dialog = new FromVaultDialog(store, sessions, keys, note);
+        using var dialog = new FromVaultDialog(store, sessions);
         dialog.ShowDialog(owner);
+    }
+
+    /// <summary>
+    /// Warns that the address or the namespace of a vault changed, and asks whether the token of its sign-in is
+    /// kept: true to keep it, false to delete it, null to cancel the change.
+    /// </summary>
+    public static bool? AskToKeepToken(VaultSession session, VaultConfiguration changed, IWin32Window? owner)
+    {
+        static string Server(VaultConfiguration configuration) =>
+            configuration.Namespace is { Length: > 0 } space ? $"{configuration.Address}, namespace {space}" : configuration.Address;
+
+        var keep = new TaskDialogButton("Keep Token");
+        var delete = new TaskDialogButton("Delete Token");
+        var answer = Show(new TaskDialogPage
+        {
+            Caption = AppName,
+            Heading = $"The address or the namespace of {session.Profile.Name} changed",
+            Text = $"The token of the sign-in was obtained from {Server(session.Profile.Configuration)}. "
+                   + $"Keep it for {Server(changed)}, or delete it?",
+            Icon = TaskDialogIcon.Warning,
+            Buttons = { keep, delete, TaskDialogButton.Cancel },
+            DefaultButton = TaskDialogButton.Cancel,
+        }, owner);
+        return answer == keep ? true : answer == delete ? false : null;
     }
 
     /// <summary>
@@ -299,7 +315,7 @@ internal static class Dialogs
         {
             return;
         }
-        using var dialog = new GenerateKeyDialog(sessions);
+        using var dialog = new GenerateKeyDialog(store, sessions);
         if (dialog.ShowDialog(owner) != DialogResult.OK || dialog.Generated is not { } generated)
         {
             return;
@@ -311,6 +327,10 @@ internal static class Dialogs
         try
         {
             await AddVaultAccountAsync(store, dialog.Session, dialog.Key, "");
+        }
+        catch (OperationCanceledException)
+        {
+            ShowError("The account was generated in the vault but not added", "The request was cancelled.", owner);
         }
         catch (Exception error)
         {
@@ -328,7 +348,7 @@ internal static class Dialogs
         {
             return;
         }
-        using var dialog = new ImportKeyDialog(sessions);
+        using var dialog = new ImportKeyDialog(store, sessions);
         if (dialog.ShowDialog(owner) != DialogResult.OK)
         {
             return;
@@ -336,6 +356,10 @@ internal static class Dialogs
         try
         {
             await AddVaultAccountAsync(store, dialog.Session, dialog.Key, dialog.AccountName);
+        }
+        catch (OperationCanceledException)
+        {
+            ShowError("The account was imported into the vault but not added", "The request was cancelled.", owner);
         }
         catch (Exception error)
         {

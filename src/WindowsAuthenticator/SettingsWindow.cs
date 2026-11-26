@@ -5,11 +5,13 @@ namespace WindowsAuthenticator;
 
 /// <summary>
 /// The Settings window, made once and hidden when closed: the Accounts tab, a list of all accounts with the
-/// details of the selected one, and the Vaults tab, a list of the vaults with the page of the selected one.
+/// details of the selected one, the Vaults tab, a list of the vaults with the page of the selected one, and a
+/// status bar that says what the app waits for from a vault, with Cancel, or what was just copied.
 /// </summary>
 internal sealed class SettingsWindow : Form
 {
     private const string WarningImage = "warning";
+    private const string BusyImage = "busy";
 
     private readonly AccountStore store;
     private readonly Action<Account> showWindow;
@@ -27,6 +29,15 @@ internal sealed class SettingsWindow : Form
     private readonly Font bold;
     private readonly Font fixedWidth = new("Consolas", 10f);
     private readonly List<(Label Label, bool Wide)> wrapping = [];
+    private readonly StatusStrip statusBar = new() { SizingGrip = false };
+    private readonly ToolStripProgressBar activityProgress = new() { Style = ProgressBarStyle.Marquee, Visible = false };
+    private readonly ToolStripStatusLabel activityText = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly ToolStripDropDownButton cancelActivity = new() { Text = "Cancel", ShowDropDownArrow = false, Visible = false };
+    private readonly System.Windows.Forms.Timer activityTimer = new() { Interval = 1000 };
+    private readonly Bitmap checkImage = Check();
+
+    /// <summary>The buttons of the shown account that call its vault, disabled while the vault has a call running.</summary>
+    private readonly List<(Button Button, bool WhileRevealed)> vaultActions = [];
 
     /// <summary>The secret shown on the page of its account until it is hidden or another account is selected.</summary>
     private (Guid Account, string Value)? revealed;
@@ -58,6 +69,7 @@ internal sealed class SettingsWindow : Form
         {
             images.Images.Add(state.ToString(), Dot(color));
         }
+        images.Images.Add(BusyImage, Busy());
         accounts.SmallImageList = images;
         vaults.SmallImageList = images;
         accounts.Columns.Add("Account");
@@ -72,7 +84,7 @@ internal sealed class SettingsWindow : Form
         addMenu.Items.Add("Account...", null, (_, _) => Dialogs.AddAccount(store, this));
         addMenu.Items.Add("From QR Code in Clipboard", null, (_, _) => Dialogs.AddAccountFromClipboard(store, this));
         addMenu.Items.Add(new ToolStripSeparator());
-        var fromVault = addMenu.Items.Add("From Vault...", null, async (_, _) => await Dialogs.AddFromVaultAsync(store, this));
+        var fromVault = addMenu.Items.Add("From Vault...", null, (_, _) => Dialogs.AddFromVault(store, this));
         var generate = addMenu.Items.Add("Generate in Vault...", null, async (_, _) => await Dialogs.GenerateAccountAsync(store, this));
         var import = addMenu.Items.Add("Import to Vault...", null, async (_, _) => await Dialogs.ImportAccountAsync(store, this));
         addMenu.Items.Add(new ToolStripSeparator());
@@ -110,6 +122,19 @@ internal sealed class SettingsWindow : Form
         tabs.TabPages.Add(accountsTab);
         tabs.TabPages.Add(vaultsTab);
         Controls.Add(tabs);
+        statusBar.Items.AddRange([activityProgress, activityText, cancelActivity]);
+        Controls.Add(statusBar);
+        cancelActivity.Click += (_, _) => store.CancelActivity();
+        activityTimer.Tick += (_, _) => ShowActivity();
+        store.ActivityChanged += (_, _) => ShowActivity();
+        Deactivate += (_, _) => HideSecret();
+        VisibleChanged += (_, _) =>
+        {
+            if (!Visible)
+            {
+                HideSecret();
+            }
+        };
 
         accounts.ItemSelectionChanged += (_, _) =>
         {
@@ -147,6 +172,84 @@ internal sealed class SettingsWindow : Form
         HideSelection = false,
         HeaderStyle = ColumnHeaderStyle.Nonclickable,
     };
+
+    /// <summary>Three grey dots, beside an account whose vault has a call running.</summary>
+    private static Bitmap Busy()
+    {
+        var bitmap = new Bitmap(16, 16);
+        using var graphics = Graphics.FromImage(bitmap);
+        using var brush = new SolidBrush(Color.Gray);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        for (var i = 0; i < 3; i++)
+        {
+            graphics.FillEllipse(brush, 1 + i * 5, 6, 4, 4);
+        }
+        return bitmap;
+    }
+
+    /// <summary>A white check mark on a green dot, beside the notice of what was copied.</summary>
+    private static Bitmap Check()
+    {
+        var bitmap = new Bitmap(16, 16);
+        using var graphics = Graphics.FromImage(bitmap);
+        using var brush = new SolidBrush(Color.ForestGreen);
+        using var pen = new Pen(Color.White, 2);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        graphics.FillEllipse(brush, 1, 1, 14, 14);
+        graphics.DrawLines(pen, [new Point(4, 8), new Point(7, 11), new Point(12, 5)]);
+        return bitmap;
+    }
+
+    /// <summary>
+    /// Shows the call the app waits for, with how long once it is 5 seconds, and Cancel, or the notice of what was
+    /// copied, or nothing; marks the accounts of busy vaults and disables their actions.
+    /// </summary>
+    private void ShowActivity()
+    {
+        if (store.Activity is { } activity)
+        {
+            var waited = (int)(DateTimeOffset.Now - activity.Operation.Since).TotalSeconds;
+            activityText.Image = null;
+            activityText.Text = $"{activity.Session.Profile.Name}: {activity.Operation.Label}..."
+                                + (waited >= 5 ? $" Still waiting, {waited} s." : "");
+            activityProgress.Visible = cancelActivity.Visible = true;
+        }
+        else
+        {
+            activityProgress.Visible = cancelActivity.Visible = false;
+            var notice = store.CurrentNotice;
+            activityText.Image = notice is null ? null : checkImage;
+            activityText.Text = notice?.Text ?? "";
+        }
+        activityTimer.Enabled = store.Activity is not null || store.CurrentNotice is not null;
+
+        foreach (ListViewItem item in accounts.Items)
+        {
+            if (item.Tag is Account account)
+            {
+                item.ImageKey = store.Problem(account) is not null ? WarningImage : store.IsVaultBusy(account) ? BusyImage : "";
+            }
+        }
+        if (SelectedAccount is { } selected)
+        {
+            var busy = store.IsVaultBusy(selected);
+            foreach (var (button, whileRevealed) in vaultActions)
+            {
+                button.Enabled = !busy || whileRevealed;
+            }
+        }
+    }
+
+    /// <summary>Hides a revealed secret, when the window loses the keyboard or is hidden.</summary>
+    private void HideSecret()
+    {
+        if (revealed is null)
+        {
+            return;
+        }
+        revealed = null;
+        ShowAccountDetails();
+    }
 
     /// <summary>A coloured dot showing the state of a vault.</summary>
     private static Bitmap Dot(Color color)
@@ -266,7 +369,7 @@ internal sealed class SettingsWindow : Form
         foreach (var account in store.Accounts)
         {
             var item = new ListViewItem(account.Name) { Tag = account };
-            item.ImageKey = store.Problem(account) is null ? "" : WarningImage;
+            item.ImageKey = store.Problem(account) is not null ? WarningImage : store.IsVaultBusy(account) ? BusyImage : "";
             item.SubItems.Add(account.Kind == AccountKind.Secret ? "Secret" : "TOTP");
             item.SubItems.Add(store.Source(account));
             accounts.Items.Add(item);
@@ -308,6 +411,7 @@ internal sealed class SettingsWindow : Form
             revealed = null;
         }
         removeAccount.Enabled = account is not null;
+        vaultActions.Clear();
         accountDetails.SuspendLayout();
         foreach (Control control in accountDetails.Controls.Cast<Control>().ToList())
         {
@@ -378,9 +482,30 @@ internal sealed class SettingsWindow : Form
             Row("Secret name", reference.Name);
             Row("Field", reference.Field);
         }
+        var vaultBusy = store.IsVaultBusy(account);
         if (account.Kind == AccountKind.Secret)
         {
             Heading("Secret");
+            var authenticate = new CheckBox
+            {
+                Text = "Ask to authenticate before it is shown or copied",
+                Checked = account.RequiresAuthentication,
+                AutoSize = true,
+            };
+            // The change is made after the event, since it rebuilds the page and the box with it.
+            authenticate.CheckedChanged += (_, _) => BeginInvoke(() =>
+            {
+                try
+                {
+                    store.SetRequiresAuthentication(account, authenticate.Checked);
+                }
+                catch (Exception error) when (error is StoreException || AccountStore.IsStorageFailure(error))
+                {
+                    Dialogs.ShowError("The setting was not changed", error.Message, this);
+                    ShowAccountDetails();
+                }
+            });
+            Wide(authenticate);
             if (revealed is { } shown)
             {
                 Wide(new TextBox { Text = shown.Value, ReadOnly = true, Font = fixedWidth, Dock = DockStyle.Fill });
@@ -397,7 +522,14 @@ internal sealed class SettingsWindow : Form
                 }
                 try
                 {
-                    revealed = (account.Id, await store.SecretValueAsync(account));
+                    if (await store.RevealSecretAsync(account, this) is { } value)
+                    {
+                        revealed = (account.Id, value);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // The user cancelled the request.
                 }
                 catch (Exception error)
                 {
@@ -405,8 +537,11 @@ internal sealed class SettingsWindow : Form
                 }
                 ShowAccountDetails();
             };
-            var copySecret = new Button { Text = "Copy Secret", AutoSize = true };
+            var copySecret = new Button { Text = "Copy Secret", AutoSize = true, Enabled = !vaultBusy };
             copySecret.Click += async (_, _) => await Dialogs.CopySecretAsync(store, account, this);
+            reveal.Enabled = !vaultBusy || revealed is not null;
+            vaultActions.Add((reveal, revealed is not null));
+            vaultActions.Add((copySecret, false));
             secretButtons.Controls.Add(reveal);
             secretButtons.Controls.Add(copySecret);
             Wide(secretButtons);
@@ -422,12 +557,17 @@ internal sealed class SettingsWindow : Form
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 0) };
         var show = new Button { Text = "Show Window", AutoSize = true };
         show.Click += (_, _) => showWindow(account);
-        var copy = new Button { Text = "Copy Code", AutoSize = true };
+        var copy = new Button { Text = "Copy Code", AutoSize = true, Enabled = !vaultBusy };
+        vaultActions.Add((copy, false));
         copy.Click += async (_, _) =>
         {
             try
             {
                 await store.CopyCodeAsync(account);
+            }
+            catch (OperationCanceledException)
+            {
+                // The user cancelled the request.
             }
             catch (Exception error)
             {
@@ -510,6 +650,8 @@ internal sealed class SettingsWindow : Form
             addMenu.Dispose();
             bold.Dispose();
             fixedWidth.Dispose();
+            activityTimer.Dispose();
+            checkImage.Dispose();
         }
         base.Dispose(disposing);
     }

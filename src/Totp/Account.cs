@@ -46,10 +46,14 @@ public sealed record Account
     {
     }
 
-    /// <summary>A secret account.</summary>
-    public static Account Secret(Guid id, string name) => new(id, name) { Kind = AccountKind.Secret };
+    /// <summary>A secret account, which asks the user to authenticate before its secret is shown or copied unless told not to.</summary>
+    public static Account Secret(Guid id, string name, bool requiresAuthentication = true) =>
+        new(id, name) { Kind = AccountKind.Secret, RequiresAuthentication = requiresAuthentication };
 
     public AccountKind Kind { get; private init; } = AccountKind.Otp;
+
+    /// <summary>Whether showing or copying a secret account's secret asks the user to authenticate; nothing reads it for an OTP account.</summary>
+    public bool RequiresAuthentication { get; init; } = true;
     public Guid Id { get; }
     public string Name { get; }
     public string? Issuer { get; }

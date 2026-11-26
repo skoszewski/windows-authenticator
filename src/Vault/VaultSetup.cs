@@ -167,9 +167,11 @@ public static class VaultSetup
 
     /// <summary>
     /// Runs the calls in order with the client's identity, which is assumed to hold the rights for them, and stops
-    /// after the first that fails. Returns the steps that ran.
+    /// after the first that fails. Returns the steps that ran; a cancelled setup throws
+    /// <see cref="OperationCanceledException"/>.
     /// </summary>
-    public static async Task<IReadOnlyList<VaultCheck>> RunAsync(VaultClient client, VaultSetupOptions options)
+    public static async Task<IReadOnlyList<VaultCheck>> RunAsync(VaultClient client, VaultSetupOptions options,
+                                                                 CancellationToken cancellationToken = default)
     {
         if (Problem(options) is { } problem)
         {
@@ -215,7 +217,8 @@ public static class VaultSetup
             {
                 try
                 {
-                    await client.SendAsync(HttpMethod.Post, $"sys/mounts/{part.Mount}", json: part.Body).ConfigureAwait(false);
+                    await client.SendAsync(HttpMethod.Post, $"sys/mounts/{part.Mount}", json: part.Body,
+                                           cancellationToken: cancellationToken).ConfigureAwait(false);
                     checks.Add(new VaultCheck(part.Step, VaultCheckOutcome.Passed,
                                               $"The {part.Label} engine is enabled at {part.Mount}.", null));
                 }
@@ -229,7 +232,8 @@ public static class VaultSetup
 
             foreach (var (step, name, text) in part.Policies)
             {
-                var check = await WritePolicyAsync(step, name, text, client, options.OverwritePolicies).ConfigureAwait(false);
+                var check = await WritePolicyAsync(step, name, text, client, options.OverwritePolicies,
+                                                   cancellationToken).ConfigureAwait(false);
                 checks.Add(check);
                 if (check.Outcome == VaultCheckOutcome.Failed)
                 {
@@ -242,13 +246,14 @@ public static class VaultSetup
 
     /// <summary>Writes one policy, first refusing a name that exists unless overwriting is allowed.</summary>
     private static async Task<VaultCheck> WritePolicyAsync(string step, string name, string text, VaultClient client,
-                                                           bool overwrite)
+                                                           bool overwrite, CancellationToken cancellationToken)
     {
         if (!overwrite)
         {
             try
             {
-                await client.SendAsync(HttpMethod.Get, $"sys/policies/acl/{name}").ConfigureAwait(false);
+                await client.SendAsync(HttpMethod.Get, $"sys/policies/acl/{name}", cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
                 return new VaultCheck(step, VaultCheckOutcome.Failed, $"A policy named {name} exists already.",
                                       new VaultProblem(VaultProblemKind.Other, "The policy exists",
                                                        $"The vault holds a policy named {name}, and writing it would replace it.",
@@ -267,7 +272,8 @@ public static class VaultSetup
         try
         {
             await client.SendAsync(HttpMethod.Put, $"sys/policies/acl/{name}",
-                                   body: new Dictionary<string, string> { ["policy"] = text }).ConfigureAwait(false);
+                                   body: new Dictionary<string, string> { ["policy"] = text },
+                                   cancellationToken: cancellationToken).ConfigureAwait(false);
             return new VaultCheck(step, VaultCheckOutcome.Passed, $"The policy {name} is written.", null);
         }
         catch (VaultException error)

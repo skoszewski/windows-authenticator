@@ -41,6 +41,9 @@ public sealed record VaultProblem(VaultProblemKind Kind, string Title, string De
     {
         IVaultProblemSource source => source.Problem,
         VaultException vault => Of(vault, method),
+        OperationCanceledException => new(VaultProblemKind.Other, "The request was cancelled",
+                                          "The request to the vault was cancelled before it ended.",
+                                          "Run it again when you are ready."),
         _ => new(VaultProblemKind.Other, "The operation failed", error.Message,
                  "Try again. If it keeps failing, copy the details into a report."),
     };
@@ -69,6 +72,12 @@ public sealed record VaultProblem(VaultProblemKind Kind, string Title, string De
         VaultErrorKind.NoSecret => new(VaultProblemKind.Server, "The secret does not exist",
                                        $"The vault holds no secret named {error.Value}.",
                                        "Check the KV version, the mount and the secret name."),
+        VaultErrorKind.SecretDeleted => new(VaultProblemKind.Server, "The secret was deleted",
+                                            $"The latest version of the secret {error.Value} is deleted or destroyed.",
+                                            "Undelete the version in Vault, or choose another secret."),
+        VaultErrorKind.WriteLost => new(VaultProblemKind.Server, "The secret was changed by another writer",
+                                        $"The field was not kept in {error.Value}: another writer replaced the secret while it was written.",
+                                        "Try again."),
         VaultErrorKind.MissingField => new(VaultProblemKind.Other, "The secret has no such field",
                                            $"The secret {error.Messages[0]} holds no field named {error.Value}.",
                                            "Check the name of the field."),

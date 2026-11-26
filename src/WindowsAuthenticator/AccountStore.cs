@@ -17,6 +17,12 @@ internal sealed record VaultSecret(Guid Profile, SecretReference Reference);
 /// <summary>A vault that needs the user's attention, and why.</summary>
 internal sealed record VaultIssue(VaultSession Session, VaultProblem Problem);
 
+/// <summary>A vault call that runs and is shown, with its vault.</summary>
+internal sealed record VaultActivity(VaultSession Session, VaultOperation Operation);
+
+/// <summary>A short message about what just worked, shown until the time given.</summary>
+internal sealed record Notice(string Text, DateTimeOffset Until);
+
 /// <summary>
 /// The registered accounts, OTP and secret accounts kept in Credential Manager or taken from a vault, the Vault
 /// sessions, and the secrets and Vault codes of the OTP accounts whose codes are shown. A secret account is never
@@ -30,6 +36,9 @@ internal sealed class AccountStore
     private readonly HashSet<Guid> openWindowIds = [];
     private readonly Dictionary<Guid, VaultKey> vaultKeys = [];
     private readonly Dictionary<Guid, VaultSecret> vaultSecrets = [];
+
+    /// <summary>The secret accounts whose stored record holds no complete KV reference, with their profile.</summary>
+    private readonly Dictionary<Guid, Guid> brokenSecrets = [];
 
     /// <summary>The codes fetched from Vault, with the period count each is valid for.</summary>
     private readonly Dictionary<Guid, (string Code, long Counter)> vaultCodes = [];
@@ -50,6 +59,39 @@ internal sealed class AccountStore
 
     /// <summary>Raised when a vault that worked fails.</summary>
     public event EventHandler<VaultIssue>? VaultProblemRaised;
+
+    /// <summary>Raised when a shown vault call starts or ends, and when a notice is shown.</summary>
+    public event EventHandler? ActivityChanged;
+
+    /// <summary>The newest shown vault call that runs, or null.</summary>
+    public VaultActivity? Activity =>
+        vaults.Select(s => s.Activity is { } operation ? new VaultActivity(s, operation) : null).OfType<VaultActivity>()
+              .MaxBy(a => a.Operation.Since);
+
+    public bool IsBusy => Activity is not null;
+
+    /// <summary>The notice of what was copied last, while it is shown, for 2 seconds.</summary>
+    public Notice? CurrentNotice => notice is { } shown && shown.Until > DateTimeOffset.Now ? shown : null;
+
+    private Notice? notice;
+
+    /// <summary>Cancels the running calls of every vault.</summary>
+    public void CancelActivity()
+    {
+        foreach (var session in vaults)
+        {
+            session.CancelOperations();
+        }
+    }
+
+    /// <summary>Whether the vault the account is kept in has a shown call running.</summary>
+    public bool IsVaultBusy(Account account) => VaultProfileOf(account) is { } profile && Vault(profile)?.Activity is not null;
+
+    private void ShowNotice(string text)
+    {
+        notice = new Notice(text, DateTimeOffset.Now.AddSeconds(2));
+        ActivityChanged?.Invoke(this, EventArgs.Empty);
+    }
 
     public IReadOnlyList<Account> Accounts { get; private set; } = [];
 
@@ -85,19 +127,29 @@ internal sealed class AccountStore
                 var session = new VaultSession(profile);
                 session.Changed += (_, _) => Changed?.Invoke(this, EventArgs.Empty);
                 session.ProblemRaised += (_, problem) => VaultProblemRaised?.Invoke(this, new VaultIssue(session, problem));
+                session.ActivityChanged += (_, _) => ActivityChanged?.Invoke(this, EventArgs.Empty);
                 return session;
             }).ToList();
             vaultRecords = Settings.VaultAccounts();
             vaultKeys.Clear();
             vaultSecrets.Clear();
+            brokenSecrets.Clear();
             var listed = CredentialStore.Accounts();
             listed.AddRange(CredentialStore.SecretAccounts());
             foreach (var record in vaultRecords)
             {
-                if (record.Reference is { } reference)
+                if (record.IsSecret)
                 {
-                    listed.Add(new ListedAccount(Account.Secret(record.Id, record.Name), record.Added));
-                    vaultSecrets[record.Id] = new VaultSecret(record.Profile, reference);
+                    listed.Add(new ListedAccount(Account.Secret(record.Id, record.Name, record.Authenticate ?? true),
+                                                 record.Added));
+                    if (record.Reference is { } reference)
+                    {
+                        vaultSecrets[record.Id] = new VaultSecret(record.Profile, reference);
+                    }
+                    else
+                    {
+                        brokenSecrets[record.Id] = record.Profile;
+                    }
                     continue;
                 }
                 try
@@ -152,7 +204,7 @@ internal sealed class AccountStore
     }
 
     /// <summary>Adds a secret account whose secret is kept in Credential Manager.</summary>
-    public void AddSecret(string name, string value)
+    public void AddSecret(string name, string value, bool requiresAuthentication)
     {
         name = name.Trim();
         if (name.Length == 0)
@@ -168,15 +220,15 @@ internal sealed class AccountStore
             throw new StoreException($"The secret is longer than Credential Manager keeps, {CredentialStore.MaxBlobSize} bytes.");
         }
         CheckCanAdd(name);
-        var account = Account.Secret(Guid.NewGuid(), name);
-        CredentialStore.AddSecret(account.Id, name, value);
+        var account = Account.Secret(Guid.NewGuid(), name, requiresAuthentication);
+        CredentialStore.AddSecret(account.Id, name, value, requiresAuthentication);
         Accounts = [.. Accounts, account];
         SaveOrder();
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Adds a secret account read from a field of a KV secret of the Vault profile; nothing secret is kept for it.</summary>
-    public void AddVaultSecret(string name, SecretReference reference, Guid profile)
+    public void AddVaultSecret(string name, SecretReference reference, Guid profile, bool requiresAuthentication)
     {
         name = name.Trim();
         if (name.Length == 0)
@@ -184,8 +236,9 @@ internal sealed class AccountStore
             throw new StoreException("Give the account a name.");
         }
         CheckCanAdd(name);
-        var account = Account.Secret(Guid.NewGuid(), name);
-        var record = new VaultRecord(account.Id, profile, name, null, "", "", DateTime.UtcNow, reference);
+        var account = Account.Secret(Guid.NewGuid(), name, requiresAuthentication);
+        var record = new VaultRecord(account.Id, profile, name, null, "", "", DateTime.UtcNow, IsSecret: true, reference,
+                                     requiresAuthentication);
         Settings.SaveVaultAccount(record);
         vaultRecords.Add(record);
         vaultSecrets[account.Id] = new VaultSecret(profile, reference);
@@ -202,7 +255,8 @@ internal sealed class AccountStore
 
     /// <summary>The Vault profile an account is kept in: the one that makes its codes or holds its secret.</summary>
     public Guid? VaultProfileOf(Account account) =>
-        vaultKeys.GetValueOrDefault(account.Id)?.Profile ?? vaultSecrets.GetValueOrDefault(account.Id)?.Profile;
+        vaultKeys.GetValueOrDefault(account.Id)?.Profile ?? vaultSecrets.GetValueOrDefault(account.Id)?.Profile
+        ?? (brokenSecrets.TryGetValue(account.Id, out var profile) ? profile : null);
 
     /// <summary>The session of the Vault profile, or null when it is gone.</summary>
     public VaultSession? Vault(Guid profile) => vaults.FirstOrDefault(s => s.Profile.Id == profile);
@@ -242,9 +296,10 @@ internal sealed class AccountStore
 
     /// <summary>
     /// Replaces the profile's name and settings, and its credential when one is given; an OIDC profile's
-    /// credential is deleted. The session signs out.
+    /// credential is deleted. The token of an OIDC sign-in is kept, unless the user chose to delete it.
     /// </summary>
-    public void UpdateVaultProfile(VaultSession session, string name, VaultConfiguration configuration, string? credential)
+    public void UpdateVaultProfile(VaultSession session, string name, VaultConfiguration configuration, string? credential,
+                                   bool deleteToken = false)
     {
         EnsureLoaded();
         CheckProfileName(name, session.Profile.Id);
@@ -259,6 +314,10 @@ internal sealed class AccountStore
         }
         Settings.SaveVaultProfile(profile);
         session.Update(profile);
+        if (deleteToken)
+        {
+            session.SignOut();
+        }
         VaultConnectionChanged();
         Reload();
     }
@@ -283,7 +342,7 @@ internal sealed class AccountStore
     }
 
     /// <summary>Refuses a change while the accounts are not listed, and a name an account has already.</summary>
-    private void CheckCanAdd(string name)
+    public void CheckCanAdd(string name)
     {
         EnsureLoaded();
         if (Accounts.Any(a => string.Equals(a.Name, name, StringComparison.CurrentCultureIgnoreCase)))
@@ -298,7 +357,7 @@ internal sealed class AccountStore
     public void Remove(Account account)
     {
         EnsureLoaded();
-        if (vaultKeys.Remove(account.Id) || vaultSecrets.Remove(account.Id))
+        if (vaultKeys.Remove(account.Id) || vaultSecrets.Remove(account.Id) || brokenSecrets.Remove(account.Id))
         {
             Settings.DeleteVaultAccount(account.Id);
             vaultRecords.RemoveAll(r => r.Id == account.Id);
@@ -363,7 +422,7 @@ internal sealed class AccountStore
         if (vaultKeys.TryGetValue(account.Id, out var vaultKey))
         {
             var session = Vault(vaultKey.Profile) ?? throw new StoreException("The vault of this account was removed.");
-            code = await session.AuthorizedAsync(client => client.CodeAsync(vaultKey.Key));
+            code = await session.AuthorizedAsync("Fetching the code", (client, cancel) => client.CodeAsync(vaultKey.Key, cancel));
         }
         else
         {
@@ -371,24 +430,70 @@ internal sealed class AccountStore
             code = account.Code(secret, DateTimeOffset.Now);
         }
         Clipboard.SetText(code);
+        ShowNotice($"Copied the code of {account.Name}");
     }
 
     /// <summary>The text of a secret account, read from its credential or from its field in Vault; nothing is kept of it.</summary>
-    public async Task<string> SecretValueAsync(Account account)
+    private async Task<string> SecretValueAsync(Account account)
     {
+        if (brokenSecrets.ContainsKey(account.Id))
+        {
+            throw new StoreException("The record of this account holds no reference to a secret.");
+        }
         if (!vaultSecrets.TryGetValue(account.Id, out var vaultSecret))
         {
             return CredentialStore.SecretValue(account.Id);
         }
         var session = Vault(vaultSecret.Profile) ?? throw new StoreException("The vault of this account was removed.");
-        return await session.AuthorizedAsync(client => client.ReadSecretAsync(vaultSecret.Reference));
+        return await session.AuthorizedAsync("Reading the secret",
+                                             (client, cancel) => client.ReadSecretAsync(vaultSecret.Reference, cancel));
+    }
+
+    /// <summary>Sets whether showing or copying a secret account's secret asks the user to authenticate.</summary>
+    public void SetRequiresAuthentication(Account account, bool required)
+    {
+        EnsureLoaded();
+        if (vaultRecords.FindIndex(r => r.Id == account.Id) is var index and >= 0)
+        {
+            var record = vaultRecords[index] with { Authenticate = required };
+            Settings.SaveVaultAccount(record);
+            vaultRecords[index] = record;
+        }
+        else
+        {
+            CredentialStore.SetSecretAuthentication(account.Id, account.Name, required);
+        }
+        Accounts = [.. Accounts.Select(a => a.Id == account.Id ? a with { RequiresAuthentication = required } : a)];
+        Changed?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
-    /// Puts the text of a secret account in the clipboard, kept out of the clipboard history, and empties the
-    /// clipboard after 30 seconds if it still holds that copy.
+    /// The text of a secret account, for the user to look at, after the user verifies with Windows Hello when the
+    /// account asks for it; null when the user cancels. Nothing is kept of it.
     /// </summary>
-    public async Task CopySecretAsync(Account account) => await ConcealedClipboard.CopyAsync(await SecretValueAsync(account));
+    public async Task<string?> RevealSecretAsync(Account account, IWin32Window? owner)
+    {
+        if (account.RequiresAuthentication && !await WindowsHello.VerifyAsync(owner, $"Show the secret {account.Name}"))
+        {
+            return null;
+        }
+        return await SecretValueAsync(account);
+    }
+
+    /// <summary>
+    /// Puts the text of a secret account in the clipboard, after the user verifies with Windows Hello when the
+    /// account asks for it, kept out of the clipboard history, and empties the clipboard after 30 seconds, or when
+    /// the app quits, if it still holds that copy. Nothing is copied when the user cancels.
+    /// </summary>
+    public async Task CopySecretAsync(Account account, IWin32Window? owner)
+    {
+        if (account.RequiresAuthentication && !await WindowsHello.VerifyAsync(owner, $"Copy the secret {account.Name}"))
+        {
+            return;
+        }
+        await ConcealedClipboard.CopyAsync(await SecretValueAsync(account));
+        ShowNotice($"Copied the secret {account.Name}");
+    }
 
     /// <summary>Fetches the codes of the shown Vault accounts that have none for the present period.</summary>
     public void Tick(DateTimeOffset now)
@@ -415,7 +520,8 @@ internal sealed class AccountStore
     {
         try
         {
-            vaultCodes[id] = (await session.AuthorizedAsync(client => client.CodeAsync(key)), counter);
+            vaultCodes[id] = (await session.AuthorizedAsync("Fetching the code", (client, cancel) => client.CodeAsync(key, cancel),
+                                                            quiet: true), counter);
         }
         catch (Exception)
         {
@@ -434,6 +540,12 @@ internal sealed class AccountStore
     /// <summary>Why a Vault account has no code or secret: its vault failed, or is gone.</summary>
     public VaultProblem? Problem(Account account)
     {
+        if (brokenSecrets.ContainsKey(account.Id))
+        {
+            return new VaultProblem(VaultProblemKind.Other, "The secret's reference is missing",
+                                    "The stored record of this account holds no reference to a KV field.",
+                                    "Remove the account and add it again.");
+        }
         if (VaultProfileOf(account) is not { } profile)
         {
             return null;
@@ -478,7 +590,7 @@ internal sealed class AccountStore
     {
         if (LoadError is not null)
         {
-            throw new StoreException("The accounts were not read, so they are not changed.");
+            throw new StoreException("The accounts were not read completely, so they are not changed.");
         }
     }
 

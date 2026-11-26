@@ -9,11 +9,13 @@ internal sealed record VaultProfile(Guid Id, string Name, VaultConfiguration Con
 
 /// <summary>
 /// An account kept in Vault: for an OTP account the parameters, the profile and the name of the key Vault makes
-/// its codes from; for a secret account the profile and the reference of the KV field, with the parameters and
-/// the key empty. Records written before secret accounts have no reference.
+/// its codes from; for a secret account the profile, the reference of the KV field, which is null when the stored
+/// record lacks a part of it, and whether it asks to authenticate, null when the record does not say, with the
+/// parameters and the key empty.
 /// </summary>
 internal sealed record VaultRecord(Guid Id, Guid Profile, string Name, string? Issuer, string Parameters, string Key,
-                                   DateTime Added, SecretReference? Reference = null);
+                                   DateTime Added, bool IsSecret = false, SecretReference? Reference = null,
+                                   bool? Authenticate = null);
 
 /// <summary>
 /// The app's settings in the current user's registry: the menu order of the accounts, the Vault profiles and
@@ -132,7 +134,10 @@ internal static class Settings
         parent?.DeleteSubKeyTree(id.ToString(), throwOnMissingSubKey: false);
     }
 
-    /// <summary>The accounts taken from Vault; an entry that cannot be read is left out.</summary>
+    /// <summary>
+    /// The accounts taken from Vault; an entry without a profile or a name, or an OTP entry without its parameters,
+    /// is left out, and a secret entry without a complete reference is listed without one.
+    /// </summary>
     public static List<VaultRecord> VaultAccounts()
     {
         var records = new List<VaultRecord>();
@@ -146,12 +151,14 @@ internal static class Settings
                 }
                 if (Text(key, "Kind") == "secret")
                 {
-                    if (Enum.TryParse<KvVersion>(Text(key, "KvVersion"), out var version) && Text(key, "KvMount") is { } mount
-                        && Text(key, "KvName") is { } secret && Text(key, "KvField") is { } field)
-                    {
-                        records.Add(new VaultRecord(id, profile, name, null, "", "", Time(key, "Added"),
-                                                    new SecretReference(version, mount, secret, field)));
-                    }
+                    var reference = Enum.TryParse<KvVersion>(Text(key, "KvVersion"), out var version)
+                                    && Text(key, "KvMount") is { } mount && Text(key, "KvName") is { } secret
+                                    && Text(key, "KvField") is { } field
+                        ? new SecretReference(version, mount, secret, field)
+                        : null;
+                    var authenticate = key.GetValue("Authenticate") is int flag ? flag != 0 : (bool?)null;
+                    records.Add(new VaultRecord(id, profile, name, null, "", "", Time(key, "Added"), IsSecret: true,
+                                                reference, authenticate));
                 }
                 else if (Text(key, "Parameters") is { } parameters && Text(key, "Key") is { } vaultKey)
                 {
@@ -172,11 +179,19 @@ internal static class Settings
         SetText(key, "Parameters", record.Parameters);
         SetText(key, "Key", record.Key);
         SetText(key, "Added", record.Added.ToString("O", CultureInfo.InvariantCulture));
-        SetText(key, "Kind", record.Reference is null ? null : "secret");
+        SetText(key, "Kind", record.IsSecret ? "secret" : null);
         SetText(key, "KvVersion", record.Reference?.Version.ToString());
         SetText(key, "KvMount", record.Reference?.Mount);
         SetText(key, "KvName", record.Reference?.Name);
         SetText(key, "KvField", record.Reference?.Field);
+        if (record.Authenticate is { } authenticate)
+        {
+            key.SetValue("Authenticate", authenticate ? 1 : 0, RegistryValueKind.DWord);
+        }
+        else
+        {
+            key.DeleteValue("Authenticate", throwOnMissingValue: false);
+        }
     }
 
     public static void DeleteVaultAccount(Guid id)

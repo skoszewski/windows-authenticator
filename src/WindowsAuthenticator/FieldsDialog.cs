@@ -3,7 +3,8 @@ namespace WindowsAuthenticator;
 /// <summary>
 /// A dialog of labelled fields under a line of information, with an accept button and Cancel. It stays open
 /// until the accept action succeeds or Cancel is chosen, and shows why the action failed in place of the
-/// information.
+/// information. While the action runs the accept button is disabled, Cancel reads Cancel Request and cancels it,
+/// and a line with a progress bar says what is done.
 /// </summary>
 internal class FieldsDialog : Form
 {
@@ -25,6 +26,11 @@ internal class FieldsDialog : Form
     };
     private readonly Button accept;
     private readonly Button? cancel;
+    private readonly FlowLayoutPanel progressRow = new() { AutoSize = true, Visible = false, Margin = new Padding(0, 10, 0, 0) };
+    private readonly Label progressLabel = new() { AutoSize = true, Anchor = AnchorStyles.Left };
+    private readonly string idleInformation;
+    private CancellationTokenSource? running;
+    private string cancelText = "Cancel";
 
     protected FieldsDialog(string title, string information, string acceptText, bool cancellable = true)
     {
@@ -40,6 +46,7 @@ internal class FieldsDialog : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         Padding = new Padding(12);
 
+        idleInformation = information;
         Information = new Label { Text = information, AutoSize = true, MaximumSize = new Size(FieldWidth, 0) };
         layout.Controls.Add(Information);
         Controls.Add(layout);
@@ -48,7 +55,18 @@ internal class FieldsDialog : Form
         accept.Click += async (_, _) => await AcceptAsync();
         if (cancellable)
         {
-            cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+            cancel = new Button { Text = "Cancel", AutoSize = true };
+            cancel.Click += (_, _) =>
+            {
+                if (running is { } call)
+                {
+                    call.Cancel();
+                }
+                else
+                {
+                    DialogResult = DialogResult.Cancel;
+                }
+            };
             buttons.Controls.Add(cancel);
             CancelButton = cancel;
         }
@@ -64,8 +82,8 @@ internal class FieldsDialog : Form
     /// <summary>The line above the fields: the purpose of the dialog, or why the last attempt failed.</summary>
     protected Label Information { get; }
 
-    /// <summary>The action of the accept button; true closes the dialog.</summary>
-    protected Func<Task<bool>>? Accepting { get; set; }
+    /// <summary>The action of the accept button, cancelled by Cancel Request; true closes the dialog.</summary>
+    protected Func<CancellationToken, Task<bool>>? Accepting { get; set; }
 
     /// <summary>The field that has the keyboard when the dialog opens.</summary>
     protected Control? InitialFocus { get; set; }
@@ -79,6 +97,28 @@ internal class FieldsDialog : Form
         return field;
     }
 
+    /// <summary>Adds a grey line of text under the last field.</summary>
+    protected Label AddHint(string text)
+    {
+        var hint = new Label { Text = text, AutoSize = true, ForeColor = SystemColors.GrayText, MaximumSize = new Size(FieldWidth, 0) };
+        layout.Controls.Add(hint);
+        return hint;
+    }
+
+    /// <summary>Says what the running action does now, on the line with the progress bar.</summary>
+    protected void Progress(string text)
+    {
+        progressLabel.Text = text + "...";
+        progressRow.Visible = true;
+    }
+
+    /// <summary>Leaves the dialog open with a question, which the accept button, renamed, answers.</summary>
+    protected void Ask(string text, string acceptText)
+    {
+        Information.Text = text;
+        accept.Text = acceptText;
+    }
+
     /// <summary>Adds a control under the fields.</summary>
     protected void AddControl(Control control) => layout.Controls.Add(control);
 
@@ -86,7 +126,8 @@ internal class FieldsDialog : Form
     protected void RenameButtons(string acceptText, string cancelText)
     {
         accept.Text = acceptText;
-        if (cancel is not null)
+        this.cancelText = cancelText;
+        if (cancel is not null && running is null)
         {
             cancel.Text = cancelText;
         }
@@ -102,8 +143,24 @@ internal class FieldsDialog : Form
 
     protected override void OnLoad(EventArgs e)
     {
+        progressRow.Controls.Add(new ProgressBar
+        {
+            Style = ProgressBarStyle.Marquee,
+            Width = LogicalToDeviceUnits(80),
+            Height = LogicalToDeviceUnits(14),
+            Anchor = AnchorStyles.Left,
+        });
+        progressRow.Controls.Add(progressLabel);
+        layout.Controls.Add(progressRow);
         layout.Controls.Add(buttons);
         base.OnLoad(e);
+    }
+
+    /// <summary>A window closed while the action runs cancels the action.</summary>
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        running?.Cancel();
+        base.OnFormClosing(e);
     }
 
     /// <summary>Runs the accept action with the button disabled, and shows why it failed.</summary>
@@ -114,14 +171,27 @@ internal class FieldsDialog : Form
             DialogResult = DialogResult.OK;
             return;
         }
+        if (running is not null)
+        {
+            return;
+        }
+        using var source = new CancellationTokenSource();
+        running = source;
         accept.Enabled = false;
-        UseWaitCursor = true;
+        if (cancel is not null)
+        {
+            cancel.Text = "Cancel Request";
+        }
         try
         {
-            if (await Accepting())
+            if (await Accepting(source.Token))
             {
                 DialogResult = DialogResult.OK;
             }
+        }
+        catch (OperationCanceledException) when (source.IsCancellationRequested && !IsDisposed)
+        {
+            Information.Text = idleInformation;
         }
         catch (Exception error) when (!IsDisposed)
         {
@@ -133,10 +203,15 @@ internal class FieldsDialog : Form
         }
         finally
         {
+            running = null;
             if (!IsDisposed)
             {
                 accept.Enabled = true;
-                UseWaitCursor = false;
+                progressRow.Visible = false;
+                if (cancel is not null)
+                {
+                    cancel.Text = cancelText;
+                }
             }
         }
     }

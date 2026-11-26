@@ -77,6 +77,39 @@ public sealed class SecretTests
         CollectionAssert.DoesNotContain(names.ToList(), "dir/");
         Assert.AreEqual(0, (await vault.ListSecretsAsync("nowhere", version)).Count);
     }
+
+    [TestMethod]
+    [DataRow(KvVersion.V1)]
+    [DataRow(KvVersion.V2)]
+    public async Task TheExistenceOfAFieldIsToldWithoutAnErrorForAnAbsentSecretOrField(KvVersion version)
+    {
+        var vault = Root();
+        Assert.IsTrue(await vault.SecretFieldExistsAsync(Reference(version)));
+        Assert.IsFalse(await vault.SecretFieldExistsAsync(Reference(version, field: "absent")));
+        Assert.IsFalse(await vault.SecretFieldExistsAsync(Reference(version, name: "absent")));
+    }
+
+    [TestMethod]
+    public async Task ADeletedKvV2SecretIsToldApartFromAnAbsentOne()
+    {
+        await VaultDevServer.AdminAsync("POST", "kv2/data/gone", new { data = new { password = "x" } });
+        await VaultDevServer.AdminAsync("POST", "kv2/delete/gone", new { versions = new[] { 1 } });
+        var vault = Root();
+        var deleted = await Assert.ThrowsExactlyAsync<VaultException>(() => vault.ReadSecretAsync(Reference(KvVersion.V2, "gone")));
+        Assert.AreEqual(VaultErrorKind.SecretDeleted, deleted.Kind);
+        Assert.AreEqual("The secret was deleted", VaultProblem.From(deleted).Title);
+        var absent = await Assert.ThrowsExactlyAsync<VaultException>(() => vault.ReadSecretAsync(Reference(KvVersion.V2, "never")));
+        Assert.AreEqual(VaultErrorKind.NoSecret, absent.Kind);
+    }
+
+    [TestMethod]
+    public async Task ACancelledCallThrowsOperationCanceledException()
+    {
+        using var source = new CancellationTokenSource();
+        await source.CancelAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => Root().ReadSecretAsync(Reference(KvVersion.V2), source.Token));
+        Assert.AreEqual("The request was cancelled", VaultProblem.From(new OperationCanceledException()).Title);
+    }
 }
 
 /// <summary>A secret reference, without a server.</summary>
@@ -94,4 +127,44 @@ public sealed class SecretReferenceTests
     [DataRow("m", "a", "")]
     public void AReferenceWithAnEmptyPartIsRefused(string mount, string name, string field) =>
         Assert.ThrowsExactly<EmptyValueException>(() => new SecretReference(KvVersion.V1, mount, name, field).Validated());
+
+    [TestMethod]
+    [DataRow("a//b")]
+    [DataRow("..")]
+    [DataRow("a/../b")]
+    [DataRow("./a")]
+    [DataRow("a/\u0007")]
+    public void AReferenceWithAMountThatIsNotAPathOfNamesIsRefused(string mount) =>
+        Assert.ThrowsExactly<InvalidValueException>(() => new SecretReference(KvVersion.V2, mount, "app", "f").Validated());
+}
+
+/// <summary>The paths a user types, without a server.</summary>
+[TestClass]
+public sealed class VaultPathTests
+{
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("a//b")]
+    [DataRow("..")]
+    [DataRow("a/../b")]
+    [DataRow("./a")]
+    [DataRow("a/\u0007")]
+    public void APathWithAnEmptyNameADotNameOrAControlCharacterIsRefused(string path) =>
+        Assert.IsNotNull(VaultPath.Problem(path));
+
+    [TestMethod]
+    [DataRow("secret")]
+    [DataRow("team/kv")]
+    [DataRow("a b/c")]
+    public void APathOfNamesIsAccepted(string path) => Assert.IsNull(VaultPath.Problem(path));
+
+    [TestMethod]
+    public void AMountOrNameIsEscapedInTheRequestPath()
+    {
+        Assert.AreEqual("a%20b/c%3Fd", VaultPath.Escaped("/a b/c?d/"));
+        var client = new VaultClient(new VaultConfiguration("http://127.0.0.1:8200", totpMount: "a b/c?d"), "t");
+        using var request = client.MakeRequest(HttpMethod.Get, $"{VaultPath.Escaped("a b/c?d")}/keys");
+        Assert.AreEqual("/v1/a%20b/c%3Fd/keys", request.RequestUri!.AbsolutePath);
+        Assert.AreEqual("", request.RequestUri.Query);
+    }
 }

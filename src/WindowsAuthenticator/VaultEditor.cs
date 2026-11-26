@@ -4,8 +4,8 @@ using Vault;
 namespace WindowsAuthenticator;
 
 /// <summary>
-/// The page of a vault: its settings, its authentication and Test Connection, with Save and Revert; the session
-/// is null for a vault not yet made.
+/// The page of a vault: its settings and its authentication, with Save and Revert, and then the connection, with
+/// Test Connection and Vault Setup; the session is null for a vault not yet made.
 /// </summary>
 internal sealed class VaultEditor : UserControl
 {
@@ -45,6 +45,12 @@ internal sealed class VaultEditor : UserControl
     private readonly Button signIn = new() { Text = "Sign In", AutoSize = true };
     private readonly Button signOut = new() { Text = "Sign Out", AutoSize = true };
     private readonly Button test = new() { Text = "Test Connection", AutoSize = true };
+    private readonly Button cancelTest = new() { Text = "Cancel", AutoSize = true, Visible = false };
+    private readonly ErrorProvider plainHttp = new() { BlinkStyle = ErrorBlinkStyle.NeverBlink };
+    private readonly Icon warning = new(SystemIcons.Warning, SystemInformation.SmallIconSize);
+    private readonly System.Windows.Forms.Timer addressPause = new() { Interval = 400 };
+    private CancellationTokenSource? testing;
+    private int addressCheck;
     private readonly Button setup = new() { Text = "Vault Setup...", AutoSize = true };
     private readonly TextBox checks = new()
     {
@@ -95,11 +101,13 @@ internal sealed class VaultEditor : UserControl
             Wide(lastAttempt);
             Wide(Buttons(signIn, signOut, copyDetails));
         }
-        Wide(Buttons(test, setup));
-        Wide(checks);
         Wide(message);
         Wide(Buttons(MakeButton("Save", Save), MakeButton("Revert", Revert)));
+        Heading("Connection");
+        Wide(Buttons(test, setup, cancelTest));
+        Wide(checks);
         Controls.Add(layout);
+        plainHttp.Icon = warning;
 
         method.SelectedIndexChanged += (_, _) => MethodChanged();
         signIn.Click += async (_, _) => await SignInAsync();
@@ -118,6 +126,17 @@ internal sealed class VaultEditor : UserControl
             }
         };
         test.Click += async (_, _) => await TestAsync();
+        cancelTest.Click += (_, _) => testing?.Cancel();
+        address.TextChanged += (_, _) =>
+        {
+            addressPause.Stop();
+            addressPause.Start();
+        };
+        addressPause.Tick += async (_, _) =>
+        {
+            addressPause.Stop();
+            await CheckPlainHttpAsync();
+        };
         setup.Click += (_, _) => OpenSetup();
         address.TextChanged += (_, _) => setup.Enabled = address.Text.Trim().Length > 0;
         ClientSizeChanged += (_, _) => WrapLabels();
@@ -232,6 +251,24 @@ internal sealed class VaultEditor : UserControl
         RefreshStatus();
     }
 
+    /// <summary>
+    /// Shows a warning beside an address that uses plain HTTP to another computer; an address of this computer is
+    /// not warned about.
+    /// </summary>
+    private async Task CheckPlainHttpAsync()
+    {
+        var current = ++addressCheck;
+        var warn = Uri.TryCreate(address.Text.Trim(), UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttp
+                   && uri.Host.Length > 0 && !await VaultDiagnostics.ResolvesToLoopbackAsync(uri.Host);
+        if (current != addressCheck || IsDisposed)
+        {
+            return;
+        }
+        plainHttp.SetError(address, warn
+            ? "The address uses plain HTTP: the credential, the token, the codes and the secrets cross the network unencrypted."
+            : "");
+    }
+
     /// <summary>The settings in the fields, or why they cannot be used.</summary>
     private VaultConfiguration Configuration()
     {
@@ -252,6 +289,14 @@ internal sealed class VaultEditor : UserControl
         {
             throw SessionException.MissingSetting("RoleID");
         }
+        if (Text(totpMount) is { } engine && VaultPath.Problem(engine) is { } engineReason)
+        {
+            throw new InvalidValueException("The TOTP engine mount", engineReason);
+        }
+        if (chosen != AuthMethod.Token && Text(authMount) is { } mount && VaultPath.Problem(mount) is { } mountReason)
+        {
+            throw new InvalidValueException("The authentication mount", mountReason);
+        }
         return new VaultConfiguration(url, Text(vaultNamespace), Text(totpMount) ?? "totp", chosen,
                                       chosen == AuthMethod.Token ? null : Text(authMount), Text(username), Text(roleId),
                                       Text(oidcRole), port);
@@ -267,7 +312,20 @@ internal sealed class VaultEditor : UserControl
             var typedCredential = credential.Text;
             if (Session is { } current)
             {
-                store.UpdateVaultProfile(current, typedName, configuration, typedCredential.Length == 0 ? null : typedCredential);
+                // A change of the address or the namespace asks whether the token of the sign-in is kept.
+                var saved = current.Profile.Configuration;
+                var deleteToken = false;
+                if (saved.AuthMethod == AuthMethod.Oidc && current.Token is not null
+                    && (configuration.Address != saved.Address || configuration.Namespace != saved.Namespace))
+                {
+                    if (Dialogs.AskToKeepToken(current, configuration, FindForm()) is not { } keep)
+                    {
+                        return;
+                    }
+                    deleteToken = !keep;
+                }
+                store.UpdateVaultProfile(current, typedName, configuration, typedCredential.Length == 0 ? null : typedCredential,
+                                         deleteToken);
             }
             else
             {
@@ -281,7 +339,8 @@ internal sealed class VaultEditor : UserControl
                 _ = SignInAsync();
             }
         }
-        catch (Exception error) when (error is SessionException or StoreException || AccountStore.IsStorageFailure(error))
+        catch (Exception error) when (error is SessionException or StoreException or InvalidValueException
+                                      || AccountStore.IsStorageFailure(error))
         {
             message.Text = Dialogs.Describe(error);
         }
@@ -304,34 +363,43 @@ internal sealed class VaultEditor : UserControl
         }
     }
 
-    /// <summary>Tests the vault as the fields describe it, with the stored credential when none is typed.</summary>
+    /// <summary>
+    /// Tests the vault as the fields describe it, with the stored credential when none is typed, and with the token
+    /// of the vault's sign-in for the address and the namespace as typed; Cancel stops it.
+    /// </summary>
     private async Task TestAsync()
     {
         test.Enabled = false;
+        cancelTest.Visible = true;
         checks.Visible = true;
         checks.Text = "Testing...";
+        using var source = new CancellationTokenSource();
+        testing = source;
         IReadOnlyList<VaultCheck> results;
         try
         {
             var configuration = Configuration();
             var typed = credential.Text;
             var used = typed.Length > 0 || Session is null ? typed : CredentialStore.VaultCredential(Session.Profile.Id);
-            // The token of the vault's sign-in goes to the address of the vault alone.
-            var saved = Session?.Profile.Configuration;
-            var sameServer = saved is not null && saved.Address == configuration.Address && saved.Namespace == configuration.Namespace;
-            results = await VaultDiagnostics.RunAsync(configuration, used, sameServer ? Session?.Token : null);
+            results = await VaultDiagnostics.RunAsync(configuration, used, Session?.Token, source.Token);
         }
-        catch (Exception error) when (error is SessionException || AccountStore.IsStorageFailure(error))
+        catch (OperationCanceledException) when (source.IsCancellationRequested)
+        {
+            results = [new VaultCheck("Test Connection", VaultCheckOutcome.Skipped, "Cancelled.", null)];
+        }
+        catch (Exception error) when (error is SessionException or InvalidValueException || AccountStore.IsStorageFailure(error))
         {
             results = [new VaultCheck("Settings", VaultCheckOutcome.Failed, "The settings cannot be tested.",
-                                      error is SessionException session ? session.Problem : VaultProblem.From(error))];
+                                      VaultProblem.From(error))];
         }
+        testing = null;
         if (IsDisposed)
         {
             return;
         }
         checks.Text = Dialogs.FormatChecks(results);
         test.Enabled = true;
+        cancelTest.Visible = false;
     }
 
     /// <summary>
@@ -348,7 +416,7 @@ internal sealed class VaultEditor : UserControl
             var typed = credential.Text;
             used = typed.Length > 0 || Session is null ? typed : CredentialStore.VaultCredential(Session.Profile.Id);
         }
-        catch (Exception error) when (error is SessionException || AccountStore.IsStorageFailure(error))
+        catch (Exception error) when (error is SessionException or InvalidValueException || AccountStore.IsStorageFailure(error))
         {
             message.Text = Dialogs.Describe(error);
             return;
@@ -388,7 +456,7 @@ internal sealed class VaultEditor : UserControl
         problem.Text = failed ? $"{current.Problem!.Detail}{Environment.NewLine}{current.Problem.Suggestion}" : "";
         lastAttempt.Text = current.LastAttempt is { } last ? $"Last attempt: {last.ToLocalTime():T}" : "";
         signIn.Enabled = current.State != VaultState.SigningIn;
-        signOut.Enabled = current.State != VaultState.SignedOut;
+        signOut.Enabled = current.State != VaultState.SignedOut || current.Token is not null;
     }
 
     protected override void Dispose(bool disposing)
@@ -397,6 +465,10 @@ internal sealed class VaultEditor : UserControl
         {
             bold.Dispose();
             fixedWidth.Dispose();
+            plainHttp.Dispose();
+            warning.Dispose();
+            addressPause.Dispose();
+            testing?.Cancel();
         }
         base.Dispose(disposing);
     }

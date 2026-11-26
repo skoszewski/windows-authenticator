@@ -92,7 +92,7 @@ internal sealed class VaultSetupDialog : FieldsDialog
         Shown += (_, _) => FitParts();
         InitialFocus = totp.Mount;
 
-        Accepting = async () =>
+        Accepting = async cancel =>
         {
             static KvSetupOptions? Kv(Part part, KvVersion version) => part.On.Checked
                 ? new KvSetupOptions(version, part.Mount.Text, part.Description.Text, part.Creator.Text.Trim(),
@@ -104,10 +104,15 @@ internal sealed class VaultSetupDialog : FieldsDialog
                                                 totp.On.Checked, Kv(kv, KvVersion.V2), Kv(kv1, KvVersion.V1));
             result.Visible = true;
             result.Text = "Running...";
+            Progress("Running the setup");
             IReadOnlyList<VaultCheck> checks;
             try
             {
-                checks = await RunAsync(configuration, credential, session, options);
+                checks = await RunAsync(configuration, credential, session, options, cancel);
+            }
+            catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+            {
+                checks = [new VaultCheck("Setup", VaultCheckOutcome.Skipped, "Cancelled.", null)];
             }
             catch (Exception error)
             {
@@ -175,15 +180,18 @@ internal sealed class VaultSetupDialog : FieldsDialog
     /// Signs in as the page describes, which for OIDC is the saved vault's current sign-in, and runs the setup.
     /// </summary>
     private static async Task<IReadOnlyList<VaultCheck>> RunAsync(VaultConfiguration configuration, string? credential,
-                                                                 VaultSession? session, VaultSetupOptions options)
+                                                                 VaultSession? session, VaultSetupOptions options,
+                                                                 CancellationToken cancellationToken)
     {
         if (configuration.AuthMethod == AuthMethod.Oidc)
         {
             var signedIn = session ?? throw VaultException.NotSignedIn();
-            return await signedIn.AuthorizedAsync(client => VaultSetup.RunAsync(client, options));
+            return await signedIn.AuthorizedAsync("Running the setup", (client, cancel) => VaultSetup.RunAsync(client, options, cancel),
+                                                  cancellationToken: cancellationToken);
         }
-        var token = await VaultClient.SignInAsync(configuration, credential) ?? throw VaultException.NotSignedIn();
-        return await VaultSetup.RunAsync(new VaultClient(configuration, token.Token), options);
+        var token = await VaultClient.SignInAsync(configuration, credential, cancellationToken)
+                    ?? throw VaultException.NotSignedIn();
+        return await VaultSetup.RunAsync(new VaultClient(configuration, token.Token), options, cancellationToken);
     }
 
     protected override void Dispose(bool disposing)

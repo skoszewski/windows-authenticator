@@ -25,10 +25,12 @@ public static class VaultDiagnostics
     /// <summary>
     /// Runs the steps in order, stopping after a step that fails; the credential is the token, the password or
     /// the SecretID of the configured method. The token of an OIDC vault's current sign-in is checked and used for
-    /// the engine step; without one an OIDC vault is not tested.
+    /// the engine step; without one an OIDC vault is not tested. A cancelled test throws
+    /// <see cref="OperationCanceledException"/>.
     /// </summary>
     public static async Task<IReadOnlyList<VaultCheck>> RunAsync(VaultConfiguration configuration, string? credential,
-                                                                 VaultToken? signedInToken = null)
+                                                                 VaultToken? signedInToken = null,
+                                                                 CancellationToken cancellationToken = default)
     {
         var checks = new List<VaultCheck>();
         var client = new VaultClient(configuration);
@@ -39,7 +41,7 @@ public static class VaultDiagnostics
             using var request = client.MakeRequest(HttpMethod.Get, "sys/health");
             var uri = request.RequestUri!;
             var plain = uri.Scheme == "http";
-            if (plain && !await ResolvesToLoopbackAsync(uri.Host).ConfigureAwait(false))
+            if (plain && !await ResolvesToLoopbackAsync(uri.Host, cancellationToken).ConfigureAwait(false))
             {
                 checks.Add(new VaultCheck("Address", VaultCheckOutcome.Warning,
                                           "The address uses plain HTTP; the credential and the codes cross the network unencrypted.",
@@ -60,7 +62,7 @@ public static class VaultDiagnostics
         // Server
         try
         {
-            var status = await client.HealthStatusAsync().ConfigureAwait(false);
+            var status = await client.HealthStatusAsync(cancellationToken).ConfigureAwait(false);
             switch (status)
             {
                 case 200:
@@ -105,8 +107,8 @@ public static class VaultDiagnostics
         try
         {
             token = signedIn is null
-                ? await VaultClient.SignInAsync(configuration, credential).ConfigureAwait(false)
-                : await new VaultClient(configuration, signedIn.Token).LookupSelfAsync().ConfigureAwait(false);
+                ? await VaultClient.SignInAsync(configuration, credential, cancellationToken).ConfigureAwait(false)
+                : await new VaultClient(configuration, signedIn.Token).LookupSelfAsync(cancellationToken).ConfigureAwait(false);
             checks.Add((method, token) switch
             {
                 (AuthMethod.Token or AuthMethod.Oidc, { Expires: { } end }) => new VaultCheck(
@@ -135,7 +137,7 @@ public static class VaultDiagnostics
         }
         try
         {
-            var keys = await new VaultClient(configuration, token.Token).ListKeysAsync().ConfigureAwait(false);
+            var keys = await new VaultClient(configuration, token.Token).ListKeysAsync(cancellationToken).ConfigureAwait(false);
             checks.Add(keys.Count == 0
                 ? new VaultCheck("TOTP engine", VaultCheckOutcome.Warning,
                                  $"The engine lists no keys; the mount {configuration.TotpMount} may be wrong.", null)
@@ -156,7 +158,7 @@ public static class VaultDiagnostics
     }
 
     /// <summary>Whether the host name resolves to loopback addresses alone; false when it does not resolve.</summary>
-    internal static async Task<bool> ResolvesToLoopbackAsync(string host)
+    public static async Task<bool> ResolvesToLoopbackAsync(string host, CancellationToken cancellationToken = default)
     {
         IPAddress[] addresses;
         if (IPAddress.TryParse(host.Trim('[', ']'), out var literal))
@@ -167,7 +169,7 @@ public static class VaultDiagnostics
         {
             try
             {
-                addresses = await Dns.GetHostAddressesAsync(host).ConfigureAwait(false);
+                addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
             }
             catch (SocketException)
             {

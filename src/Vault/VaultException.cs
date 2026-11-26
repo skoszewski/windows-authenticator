@@ -16,6 +16,8 @@ public enum VaultErrorKind
     Transport,
     NoSecret,
     MissingField,
+    SecretDeleted,
+    WriteLost,
 }
 
 /// <summary>What was wrong with the certificate of a refused TLS connection.</summary>
@@ -53,7 +55,7 @@ public sealed class VaultException : Exception
     /// <summary>The certificate's errors of a <see cref="VaultErrorKind.Transport"/> error refused in the TLS handshake.</summary>
     public CertificateErrors? Certificate { get; }
 
-    /// <summary>Whether Vault refused the token, so signing in again may help.</summary>
+    /// <summary>Whether Vault denied the call: a token it does not accept, or a policy that lacks the path.</summary>
     public bool IsDenied => Kind == VaultErrorKind.Http && Status == 403;
 
     public static VaultException BadAddress(string address) =>
@@ -85,6 +87,12 @@ public sealed class VaultException : Exception
     /// <summary>A secret without the field; the value is the field, the messages hold the secret's name.</summary>
     public static VaultException MissingField(string field, string secret) =>
         new(VaultErrorKind.MissingField, $"The secret {secret} has no field named {field}.", field, messages: [secret]);
+
+    public static VaultException SecretDeleted(string name) =>
+        new(VaultErrorKind.SecretDeleted, $"The latest version of the secret {name} is deleted.", name);
+
+    public static VaultException WriteLost(string name) =>
+        new(VaultErrorKind.WriteLost, $"The secret {name} was changed by another writer while the field was written.", name);
 
     /// <summary>A request that got no HTTP answer from the host, with the failure of the connection.</summary>
     public static VaultException Transport(string host, Exception inner, CertificateErrors? certificate = null) =>

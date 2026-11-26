@@ -2,17 +2,18 @@
 
 ## The app is Windows Forms on .NET 10 with a NotifyIcon
 
-The app targets `net10.0-windows` with Windows Forms. Of the .NET desktop stacks only Windows
-Forms has a notification area icon, `NotifyIcon`, with a `ContextMenuStrip` whose items take
+The app targets `net10.0-windows10.0.22000.0` with Windows Forms. Of the .NET desktop stacks only
+Windows Forms has a notification area icon, `NotifyIcon`, with a `ContextMenuStrip` whose items take
 submenus and ticks; WPF and WinUI 3 have none and would need a third-party package or a second
 UI framework. The app is an `ApplicationContext` with no main form, so it has no taskbar button.
 A named mutex in the `Local\` namespace keeps one instance per sign-in session, since nothing
 else stops a second tray icon from appearing.
 
 The project sets `EnableWindowsTargeting`, so the .NET SDK on macOS and Linux downloads the
-Windows Desktop targeting pack and builds the app; it cannot run there. The target is the plain
-`net10.0-windows` (Windows API level 7.0): the app uses no WinRT API, and a versioned Windows
-target framework would bring in the Windows SDK projections for nothing.
+Windows Desktop targeting pack and the Windows SDK projections, and builds the app; it cannot run
+there. The target framework names Windows 11, build 22000, since the Windows Hello prompt of a
+desktop app, `UserConsentVerifierInterop`, is a WinRT interop class of the projections and needs
+that build; the app uses no other WinRT API.
 
 ## The menu holds no codes
 
@@ -100,6 +101,14 @@ on one base, `FieldsDialog`: labelled fields, an accept button and Cancel. It st
 the reason when the action fails, as the alert loop does on macOS, and runs a Vault call with the
 accept button disabled, so the dialog is not accepted twice.
 
+While the call runs the dialog stays open, Cancel reads Cancel Request and cancels the call, and a
+line with a marquee progress bar says what is done: the user keeps what was typed, an error appears
+where the user is looking, and a dialog that vanished does not look like a fault. The question
+before an overwrite is asked in the same dialog, by renaming its accept button, since a second modal
+dialog would nest inside the one that waits. The keys and secrets offered are listed after the
+dialog opens, and a grey line under the box says when they are listed or why they are not, since a
+Windows Forms combo box has no placeholder text.
+
 ## Settings is a kept window, and the menu holds what is used with the codes
 
 The menu holds what is used while working with codes: the accounts with Copy Code and Show,
@@ -161,15 +170,28 @@ resulting Vault token in Credential Manager, as the generic credential
 `pl.waw.koszewscy.WindowsAuthenticator.vault.token:<id>` with the token's JSON as its blob, so an
 OIDC vault stays signed in after a start of the app until its token ends, as a browser keeps a
 session. The token has the same protection as the other credentials. It is taken up when the
-session is made unless it ends within five seconds, written whenever a sign-in or a renewal gives
-a new one, and deleted when the vault signs out, changes or is removed, and when Vault refuses
-it; all of this goes through one method of the session, so no path can forget the stored copy. A
-Credential Manager that refuses is written to the log and the token still works in memory, since
-losing the kept copy costs only a sign-in after the next start. The target prefix is of its own,
-so a profile's credential is never taken for a token.
+session is made, written whenever a sign-in or a renewal gives a new one, and all of this goes
+through one method of the session, so no path can forget the stored copy. A Credential Manager
+that refuses is written to the log and the token still works in memory, since losing the kept copy
+costs only a sign-in after the next start. The target prefix is of its own, so a profile's
+credential is never taken for a token.
 
-Test Connection of a signed-in OIDC vault checks that token and lists the keys with it, when the
-typed address and namespace are the saved vault's, so the token goes to that server alone.
+Nothing drops the token but the user: Sign Out and the removal of the vault delete it. An error
+never does, and neither does a change of the vault's settings nor quitting the app. A change of the
+address or the namespace of a vault that holds a token asks the user whether to keep the token,
+delete it, or cancel the change, since only the user knows whether the new address is the same
+vault moved or another one; the app does not decide it. Vault answers a policy that lacks a path
+and a token it does not accept with the same 403, so a refusal says nothing about the token, and
+dropping it would sign the user out of every account of the vault, and delete a token that is good,
+for one call a policy refuses. A refusal is reported as the problem it is; a password or AppRole
+vault logs in once more and repeats the call, since a new login costs the user nothing. A token
+that has ended is kept in Credential Manager and in memory, and not used, until a sign-in replaces
+it or Sign Out deletes it, so that Sign Out can always be chosen. The tokens of the other methods
+are in memory alone, and a change of the vault drops them, since the credential may have changed.
+
+Test Connection of a signed-in OIDC vault checks that token and lists the keys with it, at the
+address and namespace as typed: the user who typed them chose the server, as the question on
+saving them does.
 
 The sign-in window is opened from Sign In only, never because a code was needed, so a
 window opening in the background cannot start a login nobody expects. The other methods sign in
@@ -202,9 +224,8 @@ error line says what is wrong, as it does for any other failed load.
 The provider's cookies live in the app's own WebView2 user data folder under
 `%LOCALAPPDATA%\pl.waw.koszewscy\WindowsAuthenticator`, apart from Edge's profile, so a provider's
 session survives and a sign-in after a start is often one click; the cost is that the session is
-kept on disk in the user's profile. The WebView2 Runtime is part of Windows 11 and of most
-Windows 10 installations; where it is missing, the sign-in fails with a problem that says so,
-and the other methods are unaffected.
+kept on disk in the user's profile. The WebView2 Runtime is part of Windows 11; where it is
+missing, the sign-in fails with a problem that says so, and the other methods are unaffected.
 
 The `Microsoft.Web.WebView2` package references its Windows Forms, WPF and core assemblies in
 every .NET project and has no setting to leave one out. The WPF assembly needs the WPF
@@ -271,6 +292,27 @@ and shown as codes computed from a password. The prefix
 The blob is the secret as UTF-8, at most `CRED_MAX_CREDENTIAL_BLOB_SIZE`, 2560 bytes, and a longer
 one is refused when it is added.
 
+## A secret is shown or copied after Windows Hello, when its setting asks for it
+
+Reveal and Copy Secret run `UserConsentVerifierInterop.RequestVerificationForWindowAsync`, the
+desktop form of `UserConsentVerifier`, which takes a face, a fingerprint or the Windows Hello PIN,
+so a person at an unlocked computer cannot read a secret that the app holds in Credential Manager
+or fetches from Vault. It needs Windows build 22000 and the target framework
+`net10.0-windows10.0.22000.0`, which makes Windows 11 the app's requirement. The prompt is owned by
+the Settings window, or, for the tray menu, by an invisible window of its own, since the call
+needs the window of the active app. Without Windows Hello set up, or with it disabled by policy,
+the secret is refused with a message that says so, and is not shown without asking: the setting
+is the user's statement that the secret needs a check, and a fallback without one would void it.
+
+Whether a secret asks is the account's own setting, since a password that guards little is a
+nuisance to verify for on every copy and a key that guards much is not: it is an attribute of the
+secret's credential, `Koszewscy_Authenticate` with `1` or `0`, and a value of the registry key of a
+Vault secret, and a secret without it asks, as every secret did before the setting existed. A
+cancelled prompt does nothing and shows no error. A revealed secret is hidden when the Settings
+window loses the keyboard or is hidden, since the window is kept and its page would show the
+secret again, and the clipboard copy of a secret is emptied when the app quits as well as after
+30 seconds.
+
 ## A Vault secret is a reference to one field, and the KV version is the user's choice
 
 The reference is the KV version, the mount, the secret's name and the field: a secret is a single
@@ -278,12 +320,39 @@ level of fields, and the account is one of them. The user names the KV version, 
 that tells it, `sys/internal/ui/mounts/<mount>`, has no stability guarantee in Vault's
 documentation, and a wrong guess reads or writes the wrong paths. The registry key of a Vault
 account gains a kind and the four parts of the reference, which keys written before secret
-accounts lack, so they stay OTP accounts.
+accounts lack, so they stay OTP accounts. A key of the secret kind that lacks a part of the
+reference is listed with a problem, and is never read from Credential Manager by mistake. Each
+record is a key of its own, so a record that cannot be read is never saved over by a change of
+the others.
 
 Writing sets one field and keeps the rest of the secret. KV v2 patches the secret
 (`application/merge-patch+json`) and, when it does not exist, creates it with `cas` 0, so a
-concurrent creation is not overwritten. KV v1 has no merge, so the secret is read, the field set
-and the secret written back from the JSON the vault returned, which keeps fields of other types.
+concurrent creation is not overwritten. KV v1 has no merge or compare-and-set, so the secret is
+read, the field set and the secret written back from the JSON the vault returned, which keeps
+fields of other types; the secret is read again, and the write is repeated up to three times if the
+field is gone, which another writer's replacement of the secret causes. It does not catch a writer
+whose write lands between the read and the write and drops no field of ours, which no check can.
+
+The checks that need no write are made first: the account name is free, and the field is told to
+hold a value or not, which the user is asked about, so that a refusal does not leave a secret
+changed in Vault and no account for it. Generate in Vault and Import to Vault check the name before
+they change the vault for the same reason. A mount and a secret's name are names separated by
+single slashes, each escaped for the URL, with no empty name and no name of dots, which would reach
+another path.
+
+## A call to a vault is tracked in the session, shown in three places, and cancellable
+
+Every call to a vault passes through `VaultSession.AuthorizedAsync`, which records it with a label
+that says what it does, and runs it with a cancellation token of its own. The tray icon, the status
+bar of the Settings window and the Accounts list read that record, so no dialog keeps a spinner of
+its own, and a call started from anywhere shows everywhere. A call is shown 300 ms after it starts,
+since a quick call that flashes a badge looks like a fault, and the background fetch of codes is
+never shown, since it runs every period and a code window has its dot. A cancelled call throws
+`OperationCanceledException`, sets no state and reports no problem; the callers say nothing for it.
+The cancellation token is a parameter of every call of the library, the .NET convention, and is
+passed to `HttpClient`, whose timeout of 30 seconds is kept: the wait and a Cancel button are shown
+instead of a shorter timeout, which would fail slow but working vaults. A timeout stays a transport
+problem, told apart from a cancellation by the token.
 
 ## A copied secret is kept out of the clipboard history and cleared
 

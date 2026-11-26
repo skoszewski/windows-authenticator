@@ -4,8 +4,9 @@ using Vault;
 namespace WindowsAuthenticator;
 
 /// <summary>
-/// The app: its icon in the notification area, whose menu lists the accounts and the vaults with a problem, the
-/// code windows and the Settings window. The menu holds no codes; the open code windows are refreshed at each
+/// The app: its icon in the notification area, whose badge shows a vault call that runs, a copy just made, or a
+/// vault with a problem, and whose menu lists the accounts and the vaults with a problem, the code windows and the
+/// Settings window. The menu holds no codes; the open code windows are refreshed at each
 /// whole second, which also fetches the codes of Vault accounts.
 /// </summary>
 internal sealed class TrayContext : ApplicationContext
@@ -18,6 +19,8 @@ internal sealed class TrayContext : ApplicationContext
     private readonly NotifyIcon icon;
     private readonly Icon plainIcon;
     private readonly Icon warningIcon;
+    private readonly Icon busyIcon;
+    private readonly Icon copiedIcon;
     private readonly Bitmap warningImage;
     private readonly Dictionary<Guid, CodeWindow> windows = [];
     private readonly System.Windows.Forms.Timer timer = new();
@@ -28,6 +31,8 @@ internal sealed class TrayContext : ApplicationContext
     {
         plainIcon = AppIcon.Load(SystemInformation.SmallIconSize);
         warningIcon = AppIcon.LoadWithWarning(SystemInformation.SmallIconSize);
+        busyIcon = AppIcon.LoadWithBadge(SystemInformation.SmallIconSize, busy: true);
+        copiedIcon = AppIcon.LoadWithBadge(SystemInformation.SmallIconSize, busy: false);
         using (var warning = new Icon(SystemIcons.Warning, SystemInformation.SmallIconSize))
         {
             warningImage = warning.ToBitmap();
@@ -45,11 +50,12 @@ internal sealed class TrayContext : ApplicationContext
         store.Changed += (_, _) =>
         {
             CloseRemovedWindows();
-            ShowProblems();
+            ShowState();
         };
+        store.ActivityChanged += (_, _) => ShowState();
         store.VaultProblemRaised += (_, issue) => Notify(issue);
         BuildMenu();
-        ShowProblems();
+        ShowState();
         icon.Visible = true;
 
         timer.Tick += (_, _) =>
@@ -57,6 +63,7 @@ internal sealed class TrayContext : ApplicationContext
             var now = DateTimeOffset.Now;
             timer.Interval = 1000 - now.Millisecond;
             store.Tick(now);
+            ShowState();
             foreach (var window in windows.Values)
             {
                 window.ShowCode(now);
@@ -120,15 +127,30 @@ internal sealed class TrayContext : ApplicationContext
     /// <summary>The text with its ampersands doubled, so a menu shows them.</summary>
     private static string Escaped(string text) => text.Replace("&", "&&");
 
-    /// <summary>Shows the warning sign on the icon, and the first problem in its tooltip, while a vault has a problem.</summary>
-    private void ShowProblems()
+    /// <summary>
+    /// Shows on the icon and in its tooltip a vault call that runs, else a copy made in the last 2 seconds, else
+    /// the first vault with a problem.
+    /// </summary>
+    private void ShowState()
     {
         var problems = store.Problems;
-        icon.Icon = problems.Count == 0 ? plainIcon : warningIcon;
-        var text = problems.Count == 0
-            ? Dialogs.AppName
-            : $"{Dialogs.AppName}\nVault {problems[0].Session.Profile.Name}: {problems[0].Problem.Title}";
-        icon.Text = text.Length > TooltipLength ? text[..TooltipLength] : text;
+        var (shown, text) = (store.Activity, store.CurrentNotice) switch
+        {
+            ({ } activity, _) => (busyIcon, $"{Dialogs.AppName}\n{activity.Session.Profile.Name}: {activity.Operation.Label}..."),
+            (null, { } notice) => (copiedIcon, $"{Dialogs.AppName}\n{notice.Text}"),
+            _ when problems.Count > 0 =>
+                (warningIcon, $"{Dialogs.AppName}\nVault {problems[0].Session.Profile.Name}: {problems[0].Problem.Title}"),
+            _ => (plainIcon, Dialogs.AppName),
+        };
+        if (icon.Icon != shown)
+        {
+            icon.Icon = shown;
+        }
+        text = text.Length > TooltipLength ? text[..TooltipLength] : text;
+        if (icon.Text != text)
+        {
+            icon.Text = text;
+        }
     }
 
     /// <summary>Tells of a vault that worked and fails; clicking the notification opens the vault in Settings.</summary>
@@ -146,6 +168,10 @@ internal sealed class TrayContext : ApplicationContext
         try
         {
             await store.CopyCodeAsync(account);
+        }
+        catch (OperationCanceledException)
+        {
+            // The user cancelled the request.
         }
         catch (Exception failure)
         {
@@ -204,9 +230,10 @@ internal sealed class TrayContext : ApplicationContext
             window.Close();
         }
         settings.Quit();
+        ConcealedClipboard.ClearCopied();
         foreach (var session in store.Vaults)
         {
-            session.SignOut();
+            session.Close();
         }
         icon.Visible = false;
         base.ExitThreadCore();
@@ -220,6 +247,8 @@ internal sealed class TrayContext : ApplicationContext
             icon.Dispose();
             plainIcon.Dispose();
             warningIcon.Dispose();
+            busyIcon.Dispose();
+            copiedIcon.Dispose();
             warningImage.Dispose();
             settings.Dispose();
             menu.Dispose();

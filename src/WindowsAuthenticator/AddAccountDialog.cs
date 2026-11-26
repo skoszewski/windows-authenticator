@@ -16,7 +16,7 @@ internal sealed class AddAccountDialog : FieldsDialog
             PlaceholderText = "Base32 secret or otpauth://totp/... URI",
         });
         InitialFocus = input.Length == 0 ? name : secret;
-        Accepting = () =>
+        Accepting = _ =>
         {
             store.Add(OtpAuth.Parse(name.Text, secret.Text));
             return Task.FromResult(true);

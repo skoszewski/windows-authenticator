@@ -47,6 +47,12 @@ internal enum VaultState
 }
 
 /// <summary>
+/// A call to the vault that is running, as the indicators show it: it becomes visible 300 ms after it starts, so
+/// that quick calls cause no flicker; a quiet one is never shown.
+/// </summary>
+internal sealed record VaultOperation(Guid Id, string Label, bool Quiet, DateTimeOffset Since, bool Visible);
+
+/// <summary>
 /// A Vault connection: a named profile, kept in the registry with its credential in Credential Manager, and the
 /// current token, which for OIDC is also kept in Credential Manager. It runs on the UI thread.
 /// </summary>
@@ -56,8 +62,13 @@ internal sealed class VaultSession
     private VaultToken? token;
     private Task? signIn;
     private OidcSignInWindow? signInWindow;
+    private readonly List<VaultOperation> operations = [];
+    private readonly Dictionary<Guid, CancellationTokenSource> cancellers = [];
 
-    /// <summary>The session of the profile; an OIDC profile takes up the token kept for it, unless it has ended.</summary>
+    /// <summary>
+    /// The session of the profile; an OIDC profile takes up the token kept for it. A token that has ended is kept,
+    /// and not used, until a sign-in replaces it or Sign Out deletes it.
+    /// </summary>
     public VaultSession(VaultProfile profile)
     {
         Profile = profile;
@@ -75,21 +86,20 @@ internal sealed class VaultSession
             ProblemLog.Write(profile.Name, SessionException.CredentialStore(error).Problem);
             return;
         }
-        if (kept is { Expires: { } expires } && expires - DateTimeOffset.Now <= TimeSpan.FromSeconds(5))
-        {
-            Keep(null);
-        }
-        else if (kept is not null)
-        {
-            token = kept;
-            State = VaultState.SignedIn;
-        }
+        token = kept;
+        State = TokenState;
     }
 
     public VaultProfile Profile { get; private set; }
 
-    /// <summary>The current token, or null when the vault holds none.</summary>
+    /// <summary>The current token, also one that has ended, or null when the vault holds none.</summary>
     public VaultToken? Token => token;
+
+    /// <summary>The newest running call that is shown, or null.</summary>
+    public VaultOperation? Activity => operations.LastOrDefault(o => o is { Visible: true, Quiet: false });
+
+    /// <summary>Raised when a call that is not quiet starts, becomes visible or ends.</summary>
+    public event EventHandler? ActivityChanged;
 
     public VaultState State { get; private set; } = VaultState.SignedOut;
 
@@ -107,14 +117,48 @@ internal sealed class VaultSession
 
     private VaultConfiguration Configuration => Profile.Configuration;
 
-    /// <summary>Takes the new name and settings of the profile, and signs out.</summary>
+    /// <summary>
+    /// Takes the new name and settings of the profile. An OIDC token is not touched; the token of another method is
+    /// in memory alone, and is dropped, since the credential may have changed.
+    /// </summary>
     public void Update(VaultProfile updated)
     {
+        signInWindow?.Cancel();
         Profile = updated;
-        SignOut();
+        worked = false;
+        if (updated.Configuration.AuthMethod != AuthMethod.Oidc)
+        {
+            token = null;
+        }
+        SetState(TokenState);
     }
 
-    /// <summary>Drops the token, and the one kept in Credential Manager, and closes a sign-in window that is open.</summary>
+    /// <summary>The state of a held token: signed in while it has not ended.</summary>
+    private VaultState TokenState =>
+        token is not null && (token.Expires is not { } expires || expires - DateTimeOffset.Now > TimeSpan.FromSeconds(5))
+            ? VaultState.SignedIn
+            : VaultState.SignedOut;
+
+    /// <summary>Ends the session when the app quits: the sign-in window and the calls are cancelled, and the token is kept.</summary>
+    public void Close()
+    {
+        signInWindow?.Cancel();
+        CancelOperations();
+    }
+
+    /// <summary>Cancels the running calls; each caller gets an <see cref="OperationCanceledException"/>.</summary>
+    public void CancelOperations()
+    {
+        foreach (var source in cancellers.Values)
+        {
+            source.Cancel();
+        }
+    }
+
+    /// <summary>
+    /// Deletes the token, and the one kept in Credential Manager, and closes a sign-in window that is open. A token
+    /// is deleted by this alone, which the user chooses, and by the removal of the profile.
+    /// </summary>
     public void SignOut()
     {
         signInWindow?.Cancel();
@@ -296,23 +340,26 @@ internal sealed class VaultSession
     }
 
     /// <summary>
-    /// The token to use: the current one, renewed when half of its lease is gone, or a new sign-in. An OIDC
-    /// sign-in is never started here.
+    /// The token to use: the current one, renewed when half of its lease is gone, or a new sign-in when it has
+    /// ended. An OIDC sign-in is never started here, and a token that has ended is kept, not used.
     /// </summary>
-    private async Task<VaultToken> ValidTokenAsync()
+    private async Task<VaultToken> ValidTokenAsync(CancellationToken cancellationToken)
     {
-        if (token is { Expires: { } expires } current)
+        var usable = token;
+        if (usable is { Expires: { } expires } current)
         {
             var left = expires - DateTimeOffset.Now;
             if (left <= TimeSpan.FromSeconds(5))
             {
-                Keep(null);
+                usable = null;
             }
             else if (current is { Renewable: true, Lease: { } lease } && left < lease / 2)
             {
                 try
                 {
-                    Keep(await new VaultClient(Configuration, current.Token).RenewSelfAsync());
+                    var renewed = await new VaultClient(Configuration, current.Token).RenewSelfAsync(cancellationToken);
+                    Keep(renewed);
+                    usable = renewed;
                     SetState(VaultState.SignedIn);
                 }
                 catch (VaultException)
@@ -321,9 +368,9 @@ internal sealed class VaultSession
                 }
             }
         }
-        if (token is { } valid)
+        if (usable is not null)
         {
-            return valid;
+            return usable;
         }
         if (Configuration.AuthMethod == AuthMethod.Oidc)
         {
@@ -334,44 +381,78 @@ internal sealed class VaultSession
         return token ?? throw VaultException.NotSignedIn();
     }
 
-    /// <summary>Runs a call with a valid token, and records its outcome in the state.</summary>
-    public async Task<T> AuthorizedAsync<T>(Func<VaultClient, Task<T>> call)
+    /// <summary>
+    /// Runs a call with a valid token, and records its outcome in the state. The label says what the call does,
+    /// for the indicators, and a quiet call is never shown. A cancelled call throws
+    /// <see cref="OperationCanceledException"/> and changes no state; a call whose failure is no problem of the
+    /// vault, such as an optional listing, passes <paramref name="reportFailure"/> false.
+    /// </summary>
+    public async Task<T> AuthorizedAsync<T>(string label, Func<VaultClient, CancellationToken, Task<T>> call,
+                                            bool quiet = false, bool reportFailure = true,
+                                            CancellationToken cancellationToken = default)
     {
+        var operation = new VaultOperation(Guid.NewGuid(), label, quiet, DateTimeOffset.Now, Visible: false);
+        using var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        operations.Add(operation);
+        cancellers[operation.Id] = source;
+        _ = ShowLaterAsync(operation);
         try
         {
-            var result = await PerformAsync(call);
+            var result = await PerformAsync(call, source.Token);
             Succeeded();
             return result;
         }
-        catch (Exception error)
+        catch (Exception error) when (reportFailure)
         {
             Report(error);
             throw;
         }
+        finally
+        {
+            operations.RemoveAll(o => o.Id == operation.Id);
+            cancellers.Remove(operation.Id);
+            if (!quiet)
+            {
+                ActivityChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+    }
+
+    /// <summary>Makes the operation visible once it has run for 300 ms.</summary>
+    private async Task ShowLaterAsync(VaultOperation operation)
+    {
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        var index = operations.FindIndex(o => o.Id == operation.Id);
+        if (index < 0)
+        {
+            return;
+        }
+        operations[index] = operation with { Visible = true };
+        if (!operation.Quiet)
+        {
+            ActivityChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     /// <summary>
-    /// A token Vault refuses is replaced once by a new sign-in, unless the token itself is the credential or the
-    /// sign-in is OIDC.
+    /// A password or AppRole login whose token Vault refuses is replaced once by a new login. A refusal does not
+    /// say that the token is bad, since a policy refuses too, so no token is dropped because of it; a token is
+    /// dropped by Sign Out alone.
     /// </summary>
-    private async Task<T> PerformAsync<T>(Func<VaultClient, Task<T>> call)
+    private async Task<T> PerformAsync<T>(Func<VaultClient, CancellationToken, Task<T>> call,
+                                          CancellationToken cancellationToken)
     {
-        var first = await ValidTokenAsync();
+        var first = await ValidTokenAsync(cancellationToken);
         try
         {
-            return await call(new VaultClient(Configuration, first.Token));
+            return await call(new VaultClient(Configuration, first.Token), cancellationToken);
         }
-        catch (VaultException error) when (error.IsDenied && Configuration.AuthMethod != AuthMethod.Token)
+        catch (VaultException error) when (error.IsDenied
+                                           && Configuration.AuthMethod is AuthMethod.Userpass or AuthMethod.Approle)
         {
-            Keep(null);
-            if (Configuration.AuthMethod == AuthMethod.Oidc)
-            {
-                SetState(VaultState.SignedOut);
-                throw VaultException.NotSignedIn();
-            }
             await SignInAsync();
             var second = token ?? throw VaultException.NotSignedIn();
-            return await call(new VaultClient(Configuration, second.Token));
+            return await call(new VaultClient(Configuration, second.Token), cancellationToken);
         }
     }
 }

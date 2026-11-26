@@ -8,7 +8,7 @@ namespace WindowsAuthenticator;
 
 /// <summary>
 /// Copies a secret to the clipboard kept out of the clipboard history and the cloud clipboard, and empties the
-/// clipboard after 30 seconds if it still holds that copy. It runs on the UI thread.
+/// clipboard after 30 seconds, or when the app quits, if it still holds that copy. It runs on the UI thread.
 /// </summary>
 internal static class ConcealedClipboard
 {
@@ -16,6 +16,9 @@ internal static class ConcealedClipboard
 
     /// <summary>The owner of the copies: a message-only window, since a clipboard emptied without an owner takes no data.</summary>
     private static readonly NativeWindow Owner = new();
+
+    /// <summary>The sequence number of the clipboard right after the last copy, until it is emptied.</summary>
+    private static uint? copied;
 
     static ConcealedClipboard()
     {
@@ -53,7 +56,8 @@ internal static class ConcealedClipboard
             CloseClipboard();
             CryptographicOperations.ZeroMemory(bytes);
         }
-        _ = ClearLaterAsync(GetClipboardSequenceNumber());
+        copied = GetClipboardSequenceNumber();
+        _ = ClearLaterAsync();
     }
 
     /// <summary>Places the bytes in a movable global block, which the clipboard owns once it takes it.</summary>
@@ -81,11 +85,18 @@ internal static class ConcealedClipboard
         }
     }
 
-    /// <summary>Empties the clipboard after the delay, unless something else was copied since.</summary>
-    private static async Task ClearLaterAsync(uint sequence)
+    private static async Task ClearLaterAsync()
     {
         await Task.Delay(ClearAfter);
-        if (GetClipboardSequenceNumber() != sequence)
+        ClearCopied();
+    }
+
+    /// <summary>Empties the clipboard if it still holds the secret copied last, and nothing was copied since.</summary>
+    public static void ClearCopied()
+    {
+        var sequence = copied;
+        copied = null;
+        if (sequence is null || GetClipboardSequenceNumber() != sequence)
         {
             return;
         }

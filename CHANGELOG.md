@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.1 - 2026-11-26 08:46:39 +0100
+
+fix: only Sign Out or removing a vault deletes its OIDC token, a secret can ask for Windows Hello
+before it is shown or copied, the writes of a secret are checked first, and a call to a vault shows
+that it runs and can be cancelled.
+
+- A call that Vault refuses with 403, which a policy can cause as well as a bad token, no longer
+  signs the vault out or deletes its token: the vault shows the refusal as its problem, and a
+  password or AppRole vault logs in once more. Adding a secret from a vault whose secrets cannot be
+  listed no longer marks the vault as failed.
+- A token that has ended is kept, and not used, until Sign In replaces it or Sign Out deletes it;
+  Sign Out can be chosen while a token is held. Saving the vault's settings and quitting the app
+  delete no OIDC token. Saving a new address or namespace of an OIDC vault that holds a token warns
+  and asks whether to keep the token, delete it, or cancel the change.
+- Test Connection of a signed in OIDC vault uses the token of the sign-in for the address and
+  namespace as typed.
+- Reveal and Copy Secret ask the user to verify with Windows Hello when the secret's setting, Ask
+  to authenticate before it is shown or copied, asks for it; the setting is per secret, on by
+  default, chosen when the secret is added and changed in its details, and cancelling does nothing.
+  Without Windows Hello set up the secret is refused with a message that says so. The app requires
+  Windows 11.
+- A revealed secret is hidden when the Settings window loses the keyboard or is hidden, and a copied
+  secret is also cleared from the clipboard when the app quits.
+- A secret account whose stored record lacks a part of its KV reference is listed with the problem.
+- Secret in Vault refuses a taken account name before it writes, asks in the dialog before it
+  replaces a field that holds a value, and checks a KV v1 write by reading the field back. Generate
+  in Vault and Import to Vault also refuse a taken name before they change the vault.
+- A mount or secret name with an empty name between slashes, a name of dots or a control character
+  is refused, and the names of a mount or secret are escaped in the request.
+- A KV v2 secret whose latest version is deleted is reported as deleted. The keys and the secrets
+  offered are listed after the dialog opens, and a line under the box says when they could not be
+  listed, and why.
+- A warning sign beside the address of a vault, with its description on hover, says that the
+  address uses plain HTTP.
+- The tray icon shows a badge while a call to a vault runs, and a check mark for 2 seconds after a
+  code or a secret was copied. The Settings window has a status bar that says what is waited for
+  and for how long, with a Cancel button, and what was copied; the accounts of a busy vault are
+  marked, and their Copy and Reveal buttons are disabled until it ends.
+- The dialogs that call a vault stay open while the call runs, with a progress bar and a Cancel
+  Request button, and show an error in the dialog with what was typed kept. Test Connection and
+  Vault Setup can be cancelled while they run.
+- The page of a vault shows its settings and authentication, then Save and Revert, and then a
+  Connection section with Test Connection, Vault Setup and the steps of a test.
+- The README says what the app is for, and links to docs/Usage.md, docs/Vault.md and
+  docs/Development.md, which hold the rest.
+
 ## 0.5.0 - 2026-11-26 05:55:40 +0100
 
 feature: secret accounts, plain strings kept in Credential Manager or in a field of a Vault KV

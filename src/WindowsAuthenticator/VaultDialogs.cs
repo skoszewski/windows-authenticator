@@ -1,3 +1,4 @@
+using Totp;
 using Vault;
 
 namespace WindowsAuthenticator;
@@ -32,42 +33,67 @@ internal abstract class VaultFieldsDialog : FieldsDialog
 }
 
 /// <summary>
-/// Asks for a vault, one of the keys of its TOTP engine, and an account name until an account is added or
-/// Cancel is chosen. The keys the policy lets the app list are offered; any name can be typed.
+/// Asks for a vault, one of the keys of its TOTP engine, and an account name, and adds the account. The keys the
+/// policy lets the app list are offered, after the dialog opens and when the vault changes; any name can be typed.
 /// </summary>
 internal sealed class FromVaultDialog : VaultFieldsDialog
 {
     private readonly ComboBox key;
-    private readonly IReadOnlyDictionary<Guid, IReadOnlyList<string>> keys;
+    private readonly Label hint;
+    private int listing;
 
-    public FromVaultDialog(AccountStore store, IReadOnlyList<VaultSession> sessions,
-                           IReadOnlyDictionary<Guid, IReadOnlyList<string>> keys, string notes)
-        : base(sessions, "Add from Vault", "Pick a key of the vault's TOTP engine, or type its name." + notes, "Add")
+    public FromVaultDialog(AccountStore store, IReadOnlyList<VaultSession> sessions)
+        : base(sessions, "Add from Vault", "Pick a key of the vault's TOTP engine, or type its name.", "Add")
     {
-        this.keys = keys;
         key = AddField("Key", new ComboBox { DropDownStyle = ComboBoxStyle.DropDown });
+        hint = AddHint("");
         var name = AddField("Account name", new TextBox { PlaceholderText = "Empty to take it from the key" });
-        VaultChanged(Session);
+        Shown += (_, _) => VaultChanged(Session);
         InitialFocus = key;
-        Accepting = async () =>
+        Accepting = async cancel =>
         {
-            await Dialogs.AddVaultAccountAsync(store, Session, Required(key, "Key"), name.Text.Trim());
+            var keyName = Required(key, "Key");
+            Progress("Reading the key from the vault");
+            await Dialogs.AddVaultAccountAsync(store, Session, keyName, name.Text.Trim(), cancel);
             return true;
         };
     }
 
-    protected override void VaultChanged(VaultSession session)
+    /// <summary>Lists the keys of the vault; the list of a vault that was left is dropped.</summary>
+    protected override async void VaultChanged(VaultSession session)
     {
+        var current = ++listing;
         key.Items.Clear();
         key.Text = "";
-        key.Items.AddRange([.. keys.GetValueOrDefault(session.Profile.Id) ?? Array.Empty<string>()]);
+        hint.Text = "Listing the keys...";
+        string text;
+        IReadOnlyList<string> keys = [];
+        try
+        {
+            keys = await session.AuthorizedAsync("Listing the keys", (client, cancel) => client.ListKeysAsync(cancel));
+            text = keys.Count == 0 ? "The engine lists no keys." : "";
+        }
+        catch (OperationCanceledException)
+        {
+            text = "Not listed: cancelled";
+        }
+        catch (Exception error)
+        {
+            text = $"Not listed: {VaultProblem.From(error).Title}";
+        }
+        if (current != listing || IsDisposed)
+        {
+            return;
+        }
+        key.Items.AddRange([.. keys]);
+        hint.Text = text;
     }
 }
 
-/// <summary>Asks for the parameters of an account until the vault generates it in a new key or Cancel is chosen.</summary>
+/// <summary>Asks for the parameters of an account, and has the vault generate it in a new key.</summary>
 internal sealed class GenerateKeyDialog : VaultFieldsDialog
 {
-    public GenerateKeyDialog(IReadOnlyList<VaultSession> sessions)
+    public GenerateKeyDialog(AccountStore store, IReadOnlyList<VaultSession> sessions)
         : base(sessions, "Generate Account in Vault",
                "The vault makes the secret, keeps it in the key, and shows it once, to be scanned into another authenticator.",
                "Generate")
@@ -76,12 +102,16 @@ internal sealed class GenerateKeyDialog : VaultFieldsDialog
         var issuer = AddField("Issuer", new TextBox { PlaceholderText = "The organisation the key is for" });
         var account = AddField("Account name", new TextBox { PlaceholderText = "For example your e-mail address" });
         InitialFocus = key;
-        Accepting = async () =>
+        Accepting = async cancel =>
         {
             var name = Required(key, "Vault key");
             var issuerText = Required(issuer, "Issuer");
             var accountText = Required(account, "Account name");
-            Generated = await Session.AuthorizedAsync(client => client.GenerateKeyAsync(name, issuerText, accountText));
+            store.CheckCanAdd($"{issuerText}: {accountText}");
+            Progress("Generating the key in the vault");
+            Generated = await Session.AuthorizedAsync("Generating the key",
+                                                      (client, token) => client.GenerateKeyAsync(name, issuerText, accountText, token),
+                                                      cancellationToken: cancel);
             Key = name;
             return true;
         };
@@ -93,13 +123,10 @@ internal sealed class GenerateKeyDialog : VaultFieldsDialog
     public string Key { get; private set; } = "";
 }
 
-/// <summary>
-/// Asks for a key name and a base32 secret or otpauth URI until the vault stores the account in a new key or
-/// Cancel is chosen.
-/// </summary>
+/// <summary>Asks for a key name and a base32 secret or otpauth URI, and has the vault store the account in a new key.</summary>
 internal sealed class ImportKeyDialog : VaultFieldsDialog
 {
-    public ImportKeyDialog(IReadOnlyList<VaultSession> sessions)
+    public ImportKeyDialog(AccountStore store, IReadOnlyList<VaultSession> sessions)
         : base(sessions, "Import Account into Vault",
                "The vault keeps the secret in the key; it supports SHA1, SHA256 and SHA512 with 6 or 8 digits.", "Import")
     {
@@ -111,17 +138,20 @@ internal sealed class ImportKeyDialog : VaultFieldsDialog
         });
         var name = AddField("Account name", new TextBox { PlaceholderText = "Empty to take it from the key" });
         InitialFocus = key;
-        Accepting = async () =>
+        Accepting = async cancel =>
         {
             var keyName = Required(key, "Vault key");
             var input = secret.Text;
-            await Session.AuthorizedAsync(async client =>
+            var typed = name.Text.Trim();
+            store.CheckCanAdd(typed.Length == 0 ? OtpAuth.Parse(keyName, input).Account.Name : typed);
+            Progress("Importing the key into the vault");
+            await Session.AuthorizedAsync("Importing the key", async (client, token) =>
             {
-                await client.ImportKeyAsync(keyName, input);
+                await client.ImportKeyAsync(keyName, input, token);
                 return true;
-            });
+            }, cancellationToken: cancel);
             Key = keyName;
-            AccountName = name.Text.Trim();
+            AccountName = typed;
             return true;
         };
     }

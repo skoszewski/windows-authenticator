@@ -14,26 +14,33 @@ internal sealed class SecretDialog : FieldsDialog
             UseSystemPasswordChar = true,
             PlaceholderText = "The password or key to keep",
         });
+        var authenticate = AddField("Authentication", AuthenticateBox());
         InitialFocus = name;
-        Accepting = () =>
+        Accepting = _ =>
         {
-            store.AddSecret(name.Text, secret.Text);
+            store.AddSecret(name.Text, secret.Text, authenticate.Checked);
             return Task.FromResult(true);
         };
     }
+
+    /// <summary>The setting of a new secret account that asks for Windows Hello before its secret is shown or copied.</summary>
+    public static CheckBox AuthenticateBox() =>
+        new() { Text = "Ask to authenticate before it is shown or copied", Checked = true, AutoSize = true };
 }
 
 /// <summary>
-/// Asks for the vault, the KV version, the mount, the secret and the field until a secret account reading that
-/// field is added or Cancel is chosen. When writing, it also asks for the value, which is set in the field first;
-/// the other fields of the secret are kept. The secrets of the mount are listed when the vault, the version or the
-/// mount changes, and offered; any name can be typed.
+/// Asks for the vault, the KV version, the mount, the secret and the field, and adds a secret account reading that
+/// field. When writing, it also asks for the value, which is set in the field first; the other fields of the secret
+/// are kept, and a field that holds a value is replaced only after the dialog says so and the button is pressed
+/// again. The secrets of the mount are listed when the dialog opens and when the vault, the version or the mount
+/// changes, and offered; any name can be typed.
 /// </summary>
 internal sealed class VaultSecretDialog : VaultFieldsDialog
 {
     private readonly ComboBox version;
     private readonly TextBox mount;
     private readonly ComboBox secretName;
+    private readonly Label hint;
     private int listing;
 
     public VaultSecretDialog(AccountStore store, IReadOnlyList<VaultSession> sessions, bool writing)
@@ -48,20 +55,26 @@ internal sealed class VaultSecretDialog : VaultFieldsDialog
         version.SelectedIndex = 0;
         mount = AddField("Mount", new TextBox { Text = "secret", PlaceholderText = "The mount of the KV engine" });
         secretName = AddField("Secret name", new ComboBox { DropDownStyle = ComboBoxStyle.DropDown });
+        hint = AddHint("");
         var field = AddField("Field", new TextBox { Text = "password", PlaceholderText = "For example password" });
         var value = writing
             ? AddField("Secret value", new TextBox { UseSystemPasswordChar = true, PlaceholderText = "The password or key to keep" })
             : null;
         var name = AddField("Account name", new TextBox { PlaceholderText = "Empty to use the secret name and the field" });
+        var authenticate = AddField("Authentication", SecretDialog.AuthenticateBox());
         version.SelectedIndexChanged += (_, _) => VaultChanged(Session);
         mount.Leave += (_, _) => VaultChanged(Session);
-        VaultChanged(Session);
+        Shown += (_, _) => VaultChanged(Session);
         InitialFocus = mount;
 
-        Accepting = async () =>
+        SecretReference? confirmed = null;
+        Accepting = async cancel =>
         {
             var session = Session;
             var reference = new SecretReference(Version, mount.Text, secretName.Text, field.Text).Validated();
+            var typed = name.Text.Trim();
+            var accountName = typed.Length == 0 ? $"{reference.Name}: {reference.Field}" : typed;
+            store.CheckCanAdd(accountName);
             if (value is not null)
             {
                 var text = value.Text;
@@ -69,23 +82,47 @@ internal sealed class VaultSecretDialog : VaultFieldsDialog
                 {
                     throw new StoreException("The secret is empty.");
                 }
-                await session.AuthorizedAsync(async client =>
+                if (confirmed != reference)
                 {
-                    await client.WriteSecretAsync(reference, text);
+                    Progress("Checking the field in the vault");
+                    try
+                    {
+                        if (await session.AuthorizedAsync("Checking the field",
+                                                          (client, token) => client.SecretFieldExistsAsync(reference, token),
+                                                          cancellationToken: cancel))
+                        {
+                            confirmed = reference;
+                            Ask($"The field {reference.Field} of the secret {reference.Name} holds a value, which is replaced. "
+                                + "Press Replace to write it.", "Replace");
+                            return false;
+                        }
+                    }
+                    catch (VaultException error) when (error.IsDenied)
+                    {
+                        confirmed = reference;
+                        Ask("The vault does not let this token read the field, so it cannot be told whether the field holds a "
+                            + "value. A value it holds is replaced. Press Write to write it.", "Write");
+                        return false;
+                    }
+                }
+                Progress("Writing the secret in the vault");
+                await session.AuthorizedAsync("Writing the secret", async (client, token) =>
+                {
+                    await client.WriteSecretAsync(reference, text, token);
                     return true;
-                });
+                }, cancellationToken: cancel);
             }
             else
             {
-                await session.AuthorizedAsync(client => client.ReadSecretAsync(reference));
+                Progress("Reading the secret from the vault");
+                await session.AuthorizedAsync("Reading the secret", (client, token) => client.ReadSecretAsync(reference, token),
+                                              cancellationToken: cancel);
             }
 
             // A failure to add the account is reported, and the secret is not written again.
-            var typed = name.Text.Trim();
             try
             {
-                store.AddVaultSecret(typed.Length == 0 ? $"{reference.Name}: {reference.Field}" : typed, reference,
-                                     session.Profile.Id);
+                store.AddVaultSecret(accountName, reference, session.Profile.Id, authenticate.Checked);
             }
             catch (Exception error) when (error is StoreException || AccountStore.IsStorageFailure(error))
             {
@@ -106,22 +143,33 @@ internal sealed class VaultSecretDialog : VaultFieldsDialog
         var mountText = mount.Text;
         if (mountText.Trim().Trim('/').Length == 0)
         {
+            hint.Text = "";
             return;
         }
+        hint.Text = "Listing the secrets...";
         var kv = Version;
-        IReadOnlyList<string> names;
+        IReadOnlyList<string> names = [];
+        string text;
         try
         {
-            names = await session.AuthorizedAsync(client => client.ListSecretsAsync(mountText, kv));
+            names = await session.AuthorizedAsync("Listing the secrets",
+                                                  (client, token) => client.ListSecretsAsync(mountText, kv, token),
+                                                  reportFailure: false);
+            text = "";
         }
-        catch (Exception)
+        catch (OperationCanceledException)
+        {
+            text = "Not listed: cancelled";
+        }
+        catch (Exception error)
         {
             // A policy that does not allow listing leaves the names to be typed.
-            return;
+            text = $"Not listed: {VaultProblem.From(error).Title}";
         }
         if (current == listing && !IsDisposed)
         {
             secretName.Items.AddRange([.. names]);
+            hint.Text = text;
         }
     }
 }

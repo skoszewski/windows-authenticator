@@ -27,6 +27,44 @@ internal static class AppIcon
     }
 
     /// <summary>
+    /// The icon of the given size with a badge over its lower right quarter: a blue dot with three white dots while
+    /// a vault call runs, or a green dot with a white check mark after a copy.
+    /// </summary>
+    public static Icon LoadWithBadge(Size size, bool busy)
+    {
+        using var icon = Load(size);
+        using var bitmap = new Bitmap(size.Width, size.Height);
+        using (var graphics = Graphics.FromImage(bitmap))
+        using (var fill = new SolidBrush(busy ? Color.RoyalBlue : Color.ForestGreen))
+        using (var white = new SolidBrush(Color.White))
+        using (var pen = new Pen(Color.White, Math.Max(1f, size.Width / 12f)))
+        {
+            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            graphics.DrawIcon(icon, new Rectangle(Point.Empty, size));
+            var side = (size.Width * 3 + 4) / 5;
+            var badge = new RectangleF(size.Width - side, size.Height - side, side, side);
+            graphics.FillEllipse(fill, badge);
+            if (busy)
+            {
+                var dot = side / 6f;
+                for (var i = 0; i < 3; i++)
+                {
+                    graphics.FillEllipse(white, badge.X + side * (0.2f + 0.3f * i) - dot / 2, badge.Y + side / 2f - dot / 2, dot, dot);
+                }
+            }
+            else
+            {
+                graphics.DrawLines(pen, [
+                    new PointF(badge.X + side * 0.25f, badge.Y + side * 0.5f),
+                    new PointF(badge.X + side * 0.45f, badge.Y + side * 0.7f),
+                    new PointF(badge.X + side * 0.75f, badge.Y + side * 0.3f),
+                ]);
+            }
+        }
+        return FromBitmap(bitmap);
+    }
+
+    /// <summary>
     /// An icon of one 32-bit image, written as an .ico file in memory with a DIB and an empty AND mask, so the
     /// icon owns its data.
     /// </summary>

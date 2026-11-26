@@ -31,6 +31,9 @@ internal static unsafe class CredentialStore
     public const int MaxBlobSize = 5 * 512;
 
     private const string ParametersKeyword = "Koszewscy_Parameters";
+
+    /// <summary>The attribute of a secret account that says whether it asks to authenticate, 1 or 0; absent means 1.</summary>
+    private const string AuthenticateKeyword = "Koszewscy_Authenticate";
     private const string VaultDescription = "Windows Authenticator Vault credential";
     private const string VaultTokenDescription = "Windows Authenticator Vault token";
     private const string SecretDescription = "Windows Authenticator secret";
@@ -142,27 +145,27 @@ internal static unsafe class CredentialStore
     /// <summary>Writes the account's credential.</summary>
     public static void Add(NewAccount account) =>
         Write(TargetName(account.Account.Id), account.Account.Name, account.Account.Issuer, account.Secret,
-              account.Account.Parameters, "add the account");
+              (ParametersKeyword, account.Account.Parameters), "add the account");
 
     /// <summary>
-    /// Writes a generic credential persisted on this computer, replacing one of the same target, with the
-    /// parameters as its one attribute when given.
+    /// Writes a generic credential persisted on this computer, replacing one of the same target, with one attribute
+    /// when given.
     /// </summary>
-    private static void Write(string target, string userName, string? comment, string blobText, string? parameters,
-                              string operation)
+    private static void Write(string target, string userName, string? comment, string blobText,
+                              (string Keyword, string Value)? attribute, string operation)
     {
         var blobBytes = Encoding.UTF8.GetBytes(blobText);
-        var parameterBytes = parameters is null ? Array.Empty<byte>() : Encoding.Unicode.GetBytes(parameters);
+        var parameterBytes = attribute is { } named ? Encoding.Unicode.GetBytes(named.Value) : [];
         try
         {
             fixed (char* targetName = target)
             fixed (char* user = userName)
             fixed (char* commentText = comment)
-            fixed (char* keyword = ParametersKeyword)
+            fixed (char* keyword = attribute?.Keyword)
             fixed (byte* value = parameterBytes)
             fixed (byte* blob = blobBytes)
             {
-                var attribute = new CredentialAttribute
+                var fields = new CredentialAttribute
                 {
                     Keyword = keyword,
                     ValueSize = (uint)parameterBytes.Length,
@@ -176,8 +179,8 @@ internal static unsafe class CredentialStore
                     CredentialBlobSize = (uint)blobBytes.Length,
                     CredentialBlob = blob,
                     Persist = CredPersistLocalMachine,
-                    AttributeCount = parameters is null ? 0u : 1u,
-                    Attributes = parameters is null ? null : &attribute,
+                    AttributeCount = attribute is null ? 0u : 1u,
+                    Attributes = attribute is null ? null : &fields,
                     UserName = user,
                 };
                 if (!CredWrite(&credential, 0))
@@ -295,7 +298,16 @@ internal static unsafe class CredentialStore
                 {
                     var written = DateTime.FromFileTimeUtc(
                         ((long)credential->LastWritten.dwHighDateTime << 32) | (uint)credential->LastWritten.dwLowDateTime);
-                    listed.Add(new ListedAccount(Account.Secret(id, new string(credential->UserName)), written));
+                    var asks = true;
+                    for (var j = 0; j < credential->AttributeCount; j++)
+                    {
+                        var attribute = credential->Attributes[j];
+                        if (new string(attribute.Keyword) == AuthenticateKeyword)
+                        {
+                            asks = Encoding.Unicode.GetString(attribute.Value, (int)attribute.ValueSize) != "0";
+                        }
+                    }
+                    listed.Add(new ListedAccount(Account.Secret(id, new string(credential->UserName), asks), written));
                 }
             }
             return listed;
@@ -310,9 +322,15 @@ internal static unsafe class CredentialStore
     public static string SecretValue(Guid id) =>
         ReadBlob(SecretTargetName(id), "read the secret") ?? throw new CredentialStoreException("read the secret", ErrorNotFound);
 
-    /// <summary>Writes the secret account's credential, named after the account.</summary>
-    public static void AddSecret(Guid id, string name, string value) =>
-        Write(SecretTargetName(id), name, SecretDescription, value, null, "add the secret");
+    /// <summary>Writes the secret account's credential, named after the account, with whether it asks to authenticate.</summary>
+    public static void AddSecret(Guid id, string name, string value, bool requiresAuthentication) =>
+        Write(SecretTargetName(id), name, SecretDescription, value, (AuthenticateKeyword, requiresAuthentication ? "1" : "0"),
+              "add the secret");
+
+    /// <summary>Writes the secret account's credential again with its secret, setting whether it asks to authenticate.</summary>
+    public static void SetSecretAuthentication(Guid id, string name, bool required) =>
+        Write(SecretTargetName(id), name, SecretDescription, SecretValue(id), (AuthenticateKeyword, required ? "1" : "0"),
+              "change the secret");
 
     /// <summary>Deletes the secret account's credential; one already gone is no failure.</summary>
     public static void DeleteSecret(Guid id) => DeleteTarget(SecretTargetName(id), "remove the secret");
